@@ -1,3 +1,13 @@
+## 0.1.2 (2026-08-26)
+
+### Bug Fixes
+
+- **entity**: fix wrong entity path resolve
+
+### Build
+
+- **pre-commit, markdown**: added exclude for changelog
+
 ## 0.1.1 (2026-08-26)
 
 ### Bug Fixes
