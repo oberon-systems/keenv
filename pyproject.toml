@@ -1,6 +1,6 @@
 [project]
 name = "keenv"
-version = "0.0.1"
+version = "0.1.0"
 description = "Run a command with secrets pulled from a KeePass database into its environment"
 readme = "README.md"
 authors = [
