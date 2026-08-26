@@ -1,0 +1,46 @@
+[project]
+name = "keenv"
+version = "0.0.1"
+description = "Run a command with secrets pulled from a KeePass database into its environment"
+readme = "README.md"
+authors = [
+    { name = "zombig", email = "me@zombig.name" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2",
+    "pykeepass>=4.1",
+    "PyYAML>=6",
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX",
+    "Topic :: Security",
+    "Topic :: Utilities",
+]
+
+[project.scripts]
+keenv = "keenv.cli:main"
+
+[project.urls]
+Repository = "https://github.com/oberon-systems/keenv"
+Issues = "https://github.com/oberon-systems/keenv/issues"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.8.13,<0.9.0"]
+build-backend = "uv_build"
