@@ -5,6 +5,7 @@ import signal
 import time
 
 import pytest
+from pykeepass import PyKeePass
 
 from conftest import ACCESS_KEY, SECRET_KEY, TOKEN
 from keenv.uri import parse
@@ -33,6 +34,22 @@ def test_field_reads_standard_and_custom(vault, reference, expected):
 def test_field_reports_a_missing_entry(vault):
     with pytest.raises(ValueError, match='no entry at Oberon/R2/nope'):
         vault.field(parse('keenv://Oberon/R2/nope/username'))
+
+
+def test_a_leading_root_group_name_is_tolerated(vault, vault_path, keyfile):
+    root = PyKeePass(str(vault_path), keyfile=str(keyfile)).root_group.name
+    reference = f'keenv://{root}/Oberon/R2/indech-state/username'
+    assert vault.field(parse(reference)) == ACCESS_KEY
+
+
+def test_a_literal_root_prefix_is_tolerated(vault):
+    reference = 'keenv://root/Oberon/R2/indech-state/username'
+    assert vault.field(parse(reference)) == ACCESS_KEY
+
+
+def test_the_wrong_path_names_the_right_one(vault):
+    with pytest.raises(ValueError, match='it is at Oberon/R2/indech-state'):
+        vault.field(parse('keenv://Nowhere/indech-state/username'))
 
 
 def test_field_reports_a_missing_field(vault):

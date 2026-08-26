@@ -4,9 +4,13 @@ import getpass
 from pathlib import Path
 
 from pykeepass import PyKeePass
+from pykeepass.entry import Entry
 from pykeepass.exceptions import CredentialsError
 
 from .uri import Reference
+
+# How many real paths a 'no entry' message names before it stops.
+LISTED = 3
 
 # KeePass field name -> the attribute pykeepass exposes it under.
 PROPERTIES = {
@@ -65,14 +69,40 @@ class Vault:
             ) from exc
         self.path = path
 
+    def _find(self, path: tuple[str, ...]) -> Entry | None:
+        """Look an entry up, tolerating a leading root group name.
+
+        pykeepass paths start below the root group, but KeePass shows that
+        group in the path it displays, so a reference may carry it, either
+        under its real name or as a plain `root`.
+        """
+        entry = self._database.find_entries(path=list(path), first=True)
+        if entry is not None or len(path) < 2:
+            return entry
+
+        root = self._database.root_group.name or ''
+        if path[0].casefold() in {root.casefold(), 'root'}:
+            return self._database.find_entries(path=list(path[1:]), first=True)
+        return None
+
+    def _elsewhere(self, title: str) -> str:
+        """Name where an entry with that title does sit, if anywhere."""
+        found = [
+            '/'.join(entry.path)
+            for entry in self._database.find_entries(title=title) or []
+            if entry.path and None not in entry.path
+        ]
+        if not found:
+            return ''
+        return '; it is at ' + ', '.join(sorted(found)[:LISTED])
+
     def field(self, reference: Reference) -> str:
         """Read one field of one entry, or explain which half is missing."""
-        entry = self._database.find_entries(
-            path=list(reference.path), first=True,
-        )
+        entry = self._find(reference.path)
         if entry is None:
             raise ValueError(
-                f'{self.path}: no entry at {"/".join(reference.path)}',
+                f'{self.path}: no entry at {"/".join(reference.path)}'
+                f'{self._elsewhere(reference.path[-1])}',
             )
 
         attribute = PROPERTIES.get(reference.field)

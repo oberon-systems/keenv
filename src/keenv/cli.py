@@ -70,21 +70,30 @@ def _resolve(plan: Plan) -> dict[str, str]:
             )
         vault = Vault(plan.settings.vault, plan.settings.keyfile)
 
-    return {
-        name: vault.field(value) if isinstance(value, Reference) else value
-        for name, value in plan.bindings.items()
-    }
+    resolved: dict[str, str] = {}
+    for name, value in plan.bindings.items():
+        if not isinstance(value, Reference):
+            resolved[name] = value
+            continue
+        try:
+            resolved[name] = vault.field(value)
+        except ValueError as exc:
+            origin = plan.origins.get(name, 'the command line')
+            raise ValueError(f'{exc} ({name} comes from {origin})') from exc
+
+    return resolved
 
 
-def _describe(name: str, binding: Binding, value: str) -> str:
+def _describe(name: str, binding: Binding, value: str, origin: str) -> str:
     source = str(binding) if isinstance(binding, Reference) else 'literal'
-    return f'{name:<28} {source:<52} {len(value)} chars'
+    return f'{name:<28} {source:<52} {len(value):>3} chars  {origin}'
 
 
 def _check(plan: Plan) -> int:
     resolved = _resolve(plan)
     for name, binding in plan.bindings.items():
-        print(_describe(name, binding, resolved[name]))
+        origin = plan.origins.get(name, '')
+        print(_describe(name, binding, resolved[name], origin))
     return 0
 
 

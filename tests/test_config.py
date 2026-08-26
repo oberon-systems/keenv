@@ -142,3 +142,22 @@ def test_keenv_vault_beats_the_config(tmp_path, monkeypatch):
     config = write(tmp_path / 'keenv.yaml', 'vault: /from-config.kdbx\n')
     plan = build(config, tmp_path / '.env')
     assert str(plan.settings.vault) == '/from-environment.kdbx'
+
+
+def test_build_records_the_file_each_variable_came_from(tmp_path):
+    config = write(tmp_path / 'keenv.yaml', '\n'.join([
+        'env:',
+        '  SHARED:',
+        '    entry: Oberon/A',
+        '    field: password',
+        '  ONLY_IN_CONFIG:',
+        '    entry: Oberon/B',
+        '    field: password',
+    ]))
+    env = write(tmp_path / '.env', 'SHARED=literal-wins\nONLY_IN_ENV=x\n')
+
+    assert build(config, env).origins == {
+        'SHARED': str(env),
+        'ONLY_IN_CONFIG': str(config),
+        'ONLY_IN_ENV': str(env),
+    }

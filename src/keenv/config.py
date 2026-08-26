@@ -61,10 +61,11 @@ class Settings(NamedTuple):
 
 
 class Plan(NamedTuple):
-    """The database, and what to put in the environment."""
+    """The database, the environment to build, and where each came from."""
 
     settings: Settings
     bindings: dict[str, Binding]
+    origins: dict[str, str]
 
 
 def _expand(value: str | None) -> Path | None:
@@ -90,7 +91,7 @@ def _explain(path: Path, error: ValidationError) -> str:
 def load_config(path: Path) -> Plan:
     """Read a keenv.yaml. A missing file is an empty layer, not an error."""
     if not path.is_file():
-        return Plan(Settings(None, None), {})
+        return Plan(Settings(None, None), {}, {})
 
     try:
         document = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
@@ -106,7 +107,8 @@ def load_config(path: Path) -> Plan:
         name: from_entry(spec.entry, spec.field)
         for name, spec in config.env.items()
     }
-    return Plan(Settings(config.vault, config.keyfile), bindings)
+    origins = {name: str(path) for name in bindings}
+    return Plan(Settings(config.vault, config.keyfile), bindings, origins)
 
 
 def load_env(path: Path) -> dict[str, Binding]:
@@ -142,7 +144,11 @@ def build(
     """Merge both layers. .env beats keenv.yaml, the flags beat both."""
     plan = load_config(config_path)
     bindings = dict(plan.bindings)
-    bindings.update(load_env(env_path))
+    origins = dict(plan.origins)
+
+    from_env = load_env(env_path)
+    bindings.update(from_env)
+    origins.update({name: str(env_path) for name in from_env})
 
     settings = Settings(
         vault
@@ -152,4 +158,4 @@ def build(
         or _expand(os.environ.get('KEENV_KEYFILE'))
         or plan.settings.keyfile,
     )
-    return Plan(settings, bindings)
+    return Plan(settings, bindings, origins)

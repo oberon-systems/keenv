@@ -72,6 +72,12 @@ contains a slash cannot be addressed. `username`, `password`, `url`, `notes`
 and `title` are matched case-insensitively; any other name is looked up as a
 custom attribute, with its spelling preserved.
 
+The entry path starts at the top-level groups, one level below the root group
+KeePass shows at the top of its tree, so `Oberon/R2/indech-state` and not
+`Root/Oberon/R2/indech-state`. A path that does name the root group first is
+accepted too, under either the group's real name or a plain `root`, so a path
+copied straight out of KeePass works as it stands.
+
 Values that are not references pass through literally. A `#` only starts a
 comment at the beginning of a line, never in the middle of one, because a
 secret may contain it.
@@ -110,9 +116,13 @@ keenv check
 Expected output:
 
 ```text
-AWS_ACCESS_KEY_ID            keenv://Oberon/R2/indech-state/UserName    20 chars
-AWS_SECRET_ACCESS_KEY        keenv://Oberon/R2/indech-state/Password    40 chars
+AWS_ACCESS_KEY_ID            keenv://Oberon/R2/indech-state/UserName               20 chars  keenv.yaml
+AWS_SECRET_ACCESS_KEY        keenv://Oberon/R2/indech-state/Password               40 chars  keenv.yaml
+TF_LOG                       literal                                                4 chars  .env
 ```
+
+The last column is the file the variable came from, which is the quickest
+way to see that a `.env` is overriding `keenv.yaml`.
 
 Point at another database and another mapping:
 
@@ -126,7 +136,9 @@ code is the command's own, because the command replaces `keenv`.
 
 ## How it works
 
-1. Both layers are read and merged into one list of variables.
+1. Both layers are read and merged into one list of variables. A name defined
+   in both takes its value from `.env`, and `keenv check` names the file each
+   variable came from.
 2. If any of them is a `keenv://` reference, the database is opened once. The
    master password is asked for on `/dev/tty`, never on stdin, so a password
    prompt can never swallow the first line of a pipe. A key file replaces the

@@ -96,3 +96,32 @@ def test_a_reference_without_a_vault_is_an_error(tmp_path, capsys):
     ])
     assert code == 1
     assert 'no vault' in capsys.readouterr().err
+
+
+def test_check_names_the_file_each_variable_came_from(
+        config_file, keyfile, tmp_path,
+):
+    result = keenv(
+        'check', '-c', str(config_file), '-e', str(tmp_path / '.env'),
+        '--keyfile', str(keyfile),
+    )
+    assert result.returncode == 0, result.stderr
+    assert str(config_file) in result.stdout
+
+
+def test_a_missing_entry_names_the_variable_and_the_file(
+        vault_path, keyfile, tmp_path, capsys,
+):
+    env_file = tmp_path / '.env'
+    env_file.write_text(
+        'TOKEN=keenv://Nowhere/indech-state/username\n', encoding='utf-8',
+    )
+    code = main([
+        'check', '-c', str(tmp_path / 'absent.yaml'), '-e', str(env_file),
+        '--vault', str(vault_path), '--keyfile', str(keyfile),
+    ])
+    assert code == 1
+
+    error = capsys.readouterr().err
+    assert 'it is at Oberon/R2/indech-state' in error
+    assert f'TOKEN comes from {env_file}' in error
