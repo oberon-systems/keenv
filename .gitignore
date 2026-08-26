@@ -1,0 +1,27 @@
+# Agents Configs
+.claude/
+.gemini/
+CLAUDE.local.md
+GEMINI.md
+.mcp.json
+
+# IDE
+.venv
+.idea
+
+# Python build and test artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.pytest_cache/
+
+# pre-commit cache, kept in-tree by PRE_COMMIT_HOME
+.pre-commit
+
+# What keenv exists to keep off the disk. The tests build their own database
+# in a temporary directory, so none of this should ever appear here.
+*.kdbx
+*.keyx
+keenv.yaml
+.env
