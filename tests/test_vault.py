@@ -1,8 +1,18 @@
+import os
+import pty
+import select
+import signal
+import time
+
 import pytest
 
 from conftest import ACCESS_KEY, SECRET_KEY, TOKEN
 from keenv.uri import parse
-from keenv.vault import Vault
+from keenv.vault import Vault, prompt_password
+
+PASSWORD = 'not-the-real-master-password'
+PROMPT = b'Master password for'
+TIMEOUT = 10.0
 
 
 @pytest.fixture(name='vault')
@@ -45,3 +55,69 @@ def test_the_wrong_key_file_is_reported_as_credentials(vault_path, tmp_path):
     wrong.write_bytes(b'some-other-bytes')
     with pytest.raises(ValueError, match='wrong master password or key file'):
         Vault(vault_path, keyfile=wrong)
+
+
+def _read_until(master: int, needle: bytes) -> bytes:
+    """Read the child's pty until the prompt shows up, or time out."""
+    seen = b''
+    while needle not in seen:
+        if not select.select([master], [], [], TIMEOUT)[0]:
+            break
+        try:
+            chunk = os.read(master, 1024)
+        except OSError:
+            break
+        if not chunk:
+            break
+        seen += chunk
+    return seen
+
+
+def _exit_code(pid: int) -> int | None:
+    """Reap the child within the timeout, killing it if it overstays."""
+    deadline = time.monotonic() + TIMEOUT
+    while time.monotonic() < deadline:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            return os.waitstatus_to_exitcode(status)
+        time.sleep(0.05)
+
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    return None
+
+
+def test_the_password_is_read_from_the_controlling_terminal(vault_path):
+    pid, master = pty.fork()
+    if pid == 0:
+        try:
+            typed = prompt_password(vault_path)
+        except BaseException:
+            os._exit(2)
+        os._exit(0 if typed == PASSWORD else 1)
+
+    try:
+        prompted = PROMPT in _read_until(master, PROMPT)
+        if prompted:
+            os.write(master, PASSWORD.encode() + b'\n')
+        code = _exit_code(pid)
+    finally:
+        os.close(master)
+
+    assert prompted, 'no password prompt reached the terminal'
+    assert code == 0
+
+
+def test_a_session_without_a_terminal_is_reported(vault_path):
+    pid = os.fork()
+    if pid == 0:
+        os.setsid()
+        try:
+            prompt_password(vault_path)
+        except ValueError:
+            os._exit(0)
+        except BaseException:
+            os._exit(2)
+        os._exit(1)
+
+    assert _exit_code(pid) == 0

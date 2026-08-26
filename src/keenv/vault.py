@@ -25,13 +25,19 @@ def prompt_password(vault: Path) -> str:
     session without a terminal is an error the caller has to fix.
     """
     try:
-        with open('/dev/tty', 'w+', encoding='utf-8') as tty:
+        # 'w+' would need a seekable stream and a tty is not one; getpass
+        # opens /dev/tty itself to read, so writing the prompt is enough.
+        with open('/dev/tty', 'w', encoding='utf-8') as tty:
             prompt = f'Master password for {vault}: '
             return getpass.getpass(prompt, stream=tty)
     except OSError as exc:
         raise ValueError(
             f'no terminal to ask for the master password of {vault}; '
             'run keenv from a terminal or point it at a key file',
+        ) from exc
+    except EOFError as exc:
+        raise ValueError(
+            f'no master password given for {vault}',
         ) from exc
 
 
