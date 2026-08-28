@@ -20,10 +20,14 @@ DIGITS = re.compile(r'^[0-9]{4,8}$')
 SHORT = 5
 
 
+class BadPin(ValueError):
+    """The PIN as typed will not do, and typing it again might."""
+
+
 def check_pin(pin: str) -> None:
     """Accept four to eight digits and nothing else."""
     if not DIGITS.match(pin):
-        raise ValueError('the PIN must be 4 to 8 digits')
+        raise BadPin('the PIN must be 4 to 8 digits')
 
 
 def is_short(pin: str) -> bool:

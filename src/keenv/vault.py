@@ -7,11 +7,14 @@ from pykeepass import PyKeePass
 from pykeepass.entry import Entry
 from pykeepass.exceptions import CredentialsError
 
-from .secret import check_pin, is_short
+from .secret import BadPin, check_pin, is_short
 from .uri import Reference
 
 # How many real paths a 'no entry' message names before it stops.
 LISTED = 3
+
+# How many times a PIN may be typed badly before keenv gives up on it.
+TRIES = 3
 
 # KeePass field name -> the attribute pykeepass exposes it under.
 PROPERTIES = {
@@ -41,6 +44,15 @@ def _hidden(prompt: str) -> str:
     # opens /dev/tty itself to read, so writing the prompt is enough.
     with open('/dev/tty', 'w', encoding='utf-8') as tty:
         return getpass.getpass(prompt, stream=tty)
+
+
+def say(text: str) -> None:
+    """Put a line where the prompt it answers went: on the terminal."""
+    try:
+        with open('/dev/tty', 'w', encoding='utf-8') as tty:
+            tty.write(f'{text}\n')
+    except OSError:
+        pass
 
 
 def _confirm(question: str) -> bool:
@@ -83,16 +95,33 @@ def prompt_pin(vault: Path, prompt: str | None = None) -> str:
         raise ValueError(f'no PIN given for {vault}') from exc
 
 
-def prompt_new_pin(vault: Path) -> str:
+def _new_pin(vault: Path) -> str:
     """Take a PIN twice over, and argue about it if it is a short one."""
     pin = prompt_pin(vault, 'New PIN (4 to 8 digits): ')
     check_pin(pin)
     if pin != prompt_pin(vault, 'Repeat the PIN: '):
-        raise ValueError('the two PINs do not match')
+        raise BadPin('the two PINs do not match')
 
     if is_short(pin) and not _confirm(f'{SHORT_PIN}\nUse it anyway? [y/N] '):
-        raise ValueError('cancelled: choose a longer PIN')
+        raise BadPin('cancelled: choose a longer PIN')
     return pin
+
+
+def prompt_new_pin(vault: Path) -> str:
+    """Ask for a PIN until one will do, or until the tries run out.
+
+    Only a bad answer is asked again. A missing terminal arrives here as a
+    plain ValueError and goes straight back out, since no repeat fixes it.
+    """
+    reason = ''
+    for attempt in range(TRIES):
+        try:
+            return _new_pin(vault)
+        except BadPin as exc:
+            reason = str(exc)
+            if attempt + 1 < TRIES:
+                say(f'keenv: {reason}, try again')
+    raise ValueError(f'{reason}, after {TRIES} attempts')
 
 
 class WrongCredentials(ValueError):

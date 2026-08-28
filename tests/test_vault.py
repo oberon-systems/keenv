@@ -8,8 +8,9 @@ import pytest
 from pykeepass import PyKeePass
 
 from conftest import ACCESS_KEY, SECRET_KEY, TOKEN
+from keenv import vault as keenv_vault
 from keenv.uri import parse
-from keenv.vault import Vault, prompt_password
+from keenv.vault import Vault, prompt_new_pin, prompt_password
 
 PASSWORD = 'not-the-real-master-password'
 PROMPT = b'Master password for'
@@ -138,3 +139,27 @@ def test_a_session_without_a_terminal_is_reported(vault_path):
         os._exit(1)
 
     assert _exit_code(pid) == 0
+
+
+def _pins(monkeypatch, answers):
+    given = iter(answers)
+    monkeypatch.setattr(
+        keenv_vault, 'prompt_pin', lambda path, prompt=None: next(given),
+    )
+    monkeypatch.setattr(keenv_vault, 'say', lambda text: None)
+
+
+def test_a_pin_of_the_wrong_length_is_asked_again(vault_path, monkeypatch):
+    _pins(monkeypatch, ['123', '123456', '123456'])
+    assert prompt_new_pin(vault_path) == '123456'
+
+
+def test_a_mistyped_repeat_is_asked_again(vault_path, monkeypatch):
+    _pins(monkeypatch, ['123456', '654321', '123456', '123456'])
+    assert prompt_new_pin(vault_path) == '123456'
+
+
+def test_a_pin_wrong_three_times_gives_up(vault_path, monkeypatch):
+    _pins(monkeypatch, ['12', '34', '56'])
+    with pytest.raises(ValueError, match='after 3 attempts'):
+        prompt_new_pin(vault_path)
