@@ -5,10 +5,7 @@ environment of one command and nowhere else. The values never reach a file, an
 `export`, or the shell history: they exist between unlocking the database and
 `exec`ing the command, and the process that held them is replaced.
 
-It is the tool the Oberon Systems keyring policy names for local secrets, and
-the way [indech](https://github.com/oberon-systems/indech) hands the Cloudflare
-R2 keys to OpenTofu.
-
+It is the tool the Oberon Systems keyring policy names for local secrets.
 ## Contents
 
 - [Why](#why)
