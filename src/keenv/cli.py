@@ -17,11 +17,13 @@ from .config import (
 from .secret import seal, unseal, wipe
 from .uri import Reference
 from .vault import (
+    TRIES,
     Vault,
     WrongCredentials,
     prompt_new_pin,
     prompt_password,
     prompt_pin,
+    say,
 )
 
 USAGE_ERROR = 2
@@ -83,14 +85,25 @@ def _from_agent(path: Path, keyfile: Path | None,
         return None
 
     salt, blob = held
-    password = unseal(blob, salt, prompt_pin(path))
-    try:
-        vault = Vault(path, keyfile, password)
-    except WrongCredentials:
-        client.fail()
-        raise ValueError(f'{path}: wrong PIN') from None
-    client.ok()
-    return vault
+    for attempt in range(TRIES):
+        password = unseal(blob, salt, prompt_pin(path))
+        try:
+            vault = Vault(path, keyfile, password)
+        except WrongCredentials:
+            try:
+                client.fail()
+            except agent.Gone:
+                raise ValueError(
+                    f'{path}: too many wrong PINs, the agent forgot the '
+                    'master password',
+                ) from None
+            if attempt + 1 == TRIES:
+                break
+            say('keenv: wrong PIN, try again')
+            continue
+        client.ok()
+        return vault
+    raise ValueError(f'{path}: wrong PIN')
 
 
 def _seed(path: Path, keyfile: Path | None,
@@ -99,9 +112,27 @@ def _seed(path: Path, keyfile: Path | None,
     password = prompt_password(path)
     vault = Vault(path, keyfile, password)
     salt, blob = seal(password, prompt_new_pin(path))
-    client.put(salt, blob)
-    wipe(blob)
+    try:
+        client.put(salt, blob)
+    except agent.Gone:
+        # The database is open either way, so an agent that died meanwhile
+        # costs this run nothing but the remembering.
+        say('keenv: the agent went away, this run only')
+    finally:
+        wipe(blob)
     return vault
+
+
+def _fill(path: Path, keyfile: Path | None,
+          client: agent.Client) -> Vault:
+    """Seed the agent, dropping it again when the seeding fails."""
+    try:
+        return _seed(path, keyfile, client)
+    except BaseException:
+        # Only ever an agent that is still empty, so nothing is lost with
+        # it: a cancelled PIN must not cost the next run its agent.
+        agent.lock(path)
+        raise
 
 
 def _unlock(path: Path, keyfile: Path | None, ttl: int) -> Vault:
@@ -117,13 +148,7 @@ def _unlock(path: Path, keyfile: Path | None, ttl: int) -> Vault:
     if client is None:
         return Vault(path, keyfile)
 
-    try:
-        return _seed(path, keyfile, client)
-    except BaseException:
-        # Only ever the agent forked just above, and only while it is still
-        # empty: a wrong password must not cost the next run its agent.
-        agent.lock(path)
-        raise
+    return _fill(path, keyfile, client)
 
 
 def _open(settings: Settings, spawning: bool) -> Vault:
@@ -144,16 +169,20 @@ def _open(settings: Settings, spawning: bool) -> Vault:
         print(f'keenv: no agent, {exc}', file=sys.stderr)
         return Vault(path, keyfile)
 
-    if client is not None:
-        vault = _from_agent(path, keyfile, client)
-        if vault is not None:
-            return vault
+    try:
+        if client is not None:
+            vault = _from_agent(path, keyfile, client)
+            if vault is not None:
+                return vault
 
-    if not spawning:
+        if not spawning:
+            return Vault(path, keyfile)
+        if client is not None:
+            return _fill(path, keyfile, client)
+        return _unlock(path, keyfile, ttl)
+    except agent.Gone as exc:
+        print(f'keenv: {exc}', file=sys.stderr)
         return Vault(path, keyfile)
-    if client is not None:
-        return _seed(path, keyfile, client)
-    return _unlock(path, keyfile, ttl)
 
 
 def _resolve(plan: Plan, spawning: bool = True) -> dict[str, str]:

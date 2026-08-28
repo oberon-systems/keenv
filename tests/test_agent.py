@@ -158,3 +158,13 @@ def test_an_empty_agent_says_it_holds_nothing(runtime, database):
         assert agent.connect(database).get() is None
     finally:
         agent.lock(database)
+
+
+def test_a_vanished_agent_is_reported_as_a_value_error(runtime, database):
+    assert agent.spawn(database, 60)
+    client = agent.connect(database)
+    agent.lock(database)
+    assert _wait_gone(database)
+
+    with pytest.raises(agent.Gone):
+        client.get()

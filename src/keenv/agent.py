@@ -191,6 +191,10 @@ def serve(vault: Path, ttl: int, ready: int | None = None) -> None:
         _unlink(sock_path, lock_path)
 
 
+class Gone(ValueError):
+    """The agent stopped listening between one request and the next."""
+
+
 class Client:
     """The other end of the socket: one request, one reply, one connect."""
 
@@ -198,11 +202,14 @@ class Client:
         self._path = sock_path
 
     def _call(self, request: dict) -> dict:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-            conn.settimeout(TIMEOUT)
-            conn.connect(str(self._path))
-            conn.sendall(json.dumps(request).encode() + b'\n')
-            reply = json.loads(_readline(conn) or b'{}')
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                conn.settimeout(TIMEOUT)
+                conn.connect(str(self._path))
+                conn.sendall(json.dumps(request).encode() + b'\n')
+                reply = json.loads(_readline(conn) or b'{}')
+        except OSError as exc:
+            raise Gone(f'keenv agent: {exc}') from exc
         if 'error' in reply:
             raise ValueError(f'keenv agent: {reply["error"]}')
         return reply

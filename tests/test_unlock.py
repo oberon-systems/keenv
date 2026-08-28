@@ -150,9 +150,11 @@ def test_a_window_of_wrong_pins_drops_the_agent(runtime, database, opened,
 
     _refuse_everything(monkeypatch)
     monkeypatch.setattr(cli, 'prompt_pin', lambda path: '999999')
-    for _ in range(agent.ATTEMPTS):
-        with pytest.raises(ValueError, match='wrong PIN'):
-            cli._open(Settings(database, None, TTL), True)
+    # Every command spends TRIES of the window, so two of them fill it.
+    with pytest.raises(ValueError, match='wrong PIN'):
+        cli._open(Settings(database, None, TTL), True)
+    with pytest.raises(ValueError, match='the agent forgot'):
+        cli._open(Settings(database, None, TTL), True)
 
     assert _wait_gone(database)
 
@@ -202,3 +204,39 @@ def test_check_leaves_an_empty_agent_empty(runtime, database, opened,
         assert agent.connect(database).get() is None
     finally:
         agent.lock(database)
+
+
+def test_a_wrong_pin_can_be_typed_again(runtime, database, opened,
+                                        monkeypatch):
+    _answers(monkeypatch)
+    cli._open(Settings(database, None, TTL), True)
+    try:
+        given = iter(['999999', '888888', PIN])
+        monkeypatch.setattr(cli, 'prompt_pin', lambda path: next(given))
+        monkeypatch.setattr(cli, 'say', lambda text: None)
+
+        def refuse_the_rubbish(path, keyfile=None, password=None):
+            if password != PASSWORD:
+                raise WrongCredentials('nope')
+            return 'opened'
+
+        monkeypatch.setattr(cli, 'Vault', refuse_the_rubbish)
+        assert cli._open(Settings(database, None, TTL), True) == 'opened'
+    finally:
+        agent.lock(database)
+
+
+def test_a_refused_pin_drops_an_agent_that_was_already_up(runtime, database,
+                                                          opened,
+                                                          monkeypatch):
+    _answers(monkeypatch)
+    assert agent.spawn(database, TTL)
+
+    def refuse(path):
+        raise ValueError('the two PINs do not match')
+
+    monkeypatch.setattr(cli, 'prompt_new_pin', refuse)
+    with pytest.raises(ValueError, match='do not match'):
+        cli._open(Settings(database, None, TTL), True)
+
+    assert _wait_gone(database)
