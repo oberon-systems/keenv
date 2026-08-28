@@ -1,3 +1,16 @@
+## 0.2.1 (2026-08-28)
+
+### Bug Fixes
+
+- **pin**: a wrong PIN is named as one, not as a codec error
+- **agent**: drop an empty agent on every path and survive one that vanished
+- **vault**: ask for a PIN again instead of giving up on the first one
+- **agent**: never leave an empty agent behind
+
+### Documentation
+
+- **readme**: update readme
+
 ## 0.2.0 (2026-08-28)
 
 ### Features
