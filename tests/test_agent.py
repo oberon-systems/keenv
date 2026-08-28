@@ -150,3 +150,11 @@ def test_a_cleared_lock_file_lets_the_next_agent_in(runtime, database):
 def test_the_socket_is_private(running, database):
     _, sock_path = agent.paths(database)
     assert sock_path.stat().st_mode & 0o077 == 0
+
+
+def test_an_empty_agent_says_it_holds_nothing(runtime, database):
+    assert agent.spawn(database, 60)
+    try:
+        assert agent.connect(database).get() is None
+    finally:
+        agent.lock(database)

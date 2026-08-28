@@ -166,6 +166,10 @@ PIN for /home/you/oberon.kdbx:
 `keenv unlock` on purpose: the first run that needs the password is the
 unlock, so there is no separate state to remember to set up.
 
+A run whose password or PIN is turned down leaves no agent behind, and an
+agent that is up but holds nothing is not an error either: the next `keenv
+run` simply asks for the password and a new PIN again.
+
 ### What is kept, and where
 
 The agent never holds the master password in the clear. The client seals it

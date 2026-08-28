@@ -72,13 +72,17 @@ def _split_command(argv: list[str]) -> tuple[list[str], list[str]]:
 
 
 def _from_agent(path: Path, keyfile: Path | None,
-                client: agent.Client) -> Vault:
-    """Open with what the agent holds, unsealed by the PIN.
+                client: agent.Client) -> Vault | None:
+    """Open with what the agent holds, or None while it holds nothing.
 
     Nothing here checks the PIN: a wrong one simply unseals to rubbish and
     the database is what turns it down.
     """
-    salt, blob = client.get()
+    held = client.get()
+    if held is None:
+        return None
+
+    salt, blob = held
     password = unseal(blob, salt, prompt_pin(path))
     try:
         vault = Vault(path, keyfile, password)
@@ -89,24 +93,37 @@ def _from_agent(path: Path, keyfile: Path | None,
     return vault
 
 
+def _seed(path: Path, keyfile: Path | None,
+          client: agent.Client) -> Vault:
+    """Take the master password and a new PIN, then fill an empty agent."""
+    password = prompt_password(path)
+    vault = Vault(path, keyfile, password)
+    salt, blob = seal(password, prompt_new_pin(path))
+    client.put(salt, blob)
+    wipe(blob)
+    return vault
+
+
 def _unlock(path: Path, keyfile: Path | None, ttl: int) -> Vault:
-    """Take the master password and a new PIN, then seed the agent.
+    """Fork an empty agent and fill it, dropping it again if that fails.
 
     The agent is forked first and empty, so the plaintext password is
     never in its address space, not even inherited across the fork.
     """
-    started = agent.spawn(path, ttl)
-    password = prompt_password(path)
-    vault = Vault(path, keyfile, password)
-    if not started:
-        return vault
+    if not agent.spawn(path, ttl):
+        return Vault(path, keyfile)
 
-    salt, blob = seal(password, prompt_new_pin(path))
     client = agent.connect(path)
-    if client is not None:
-        client.put(salt, blob)
-    wipe(blob)
-    return vault
+    if client is None:
+        return Vault(path, keyfile)
+
+    try:
+        return _seed(path, keyfile, client)
+    except BaseException:
+        # Only ever the agent forked just above, and only while it is still
+        # empty: a wrong password must not cost the next run its agent.
+        agent.lock(path)
+        raise
 
 
 def _open(settings: Settings, spawning: bool) -> Vault:
@@ -128,9 +145,14 @@ def _open(settings: Settings, spawning: bool) -> Vault:
         return Vault(path, keyfile)
 
     if client is not None:
-        return _from_agent(path, keyfile, client)
+        vault = _from_agent(path, keyfile, client)
+        if vault is not None:
+            return vault
+
     if not spawning:
         return Vault(path, keyfile)
+    if client is not None:
+        return _seed(path, keyfile, client)
     return _unlock(path, keyfile, ttl)
 
 

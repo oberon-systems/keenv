@@ -155,3 +155,50 @@ def test_a_window_of_wrong_pins_drops_the_agent(runtime, database, opened,
             cli._open(Settings(database, None, TTL), True)
 
     assert _wait_gone(database)
+
+
+def test_a_wrong_master_password_leaves_no_agent(runtime, database,
+                                                 monkeypatch):
+    _answers(monkeypatch)
+    _refuse_everything(monkeypatch)
+    with pytest.raises(WrongCredentials):
+        cli._open(Settings(database, None, TTL), True)
+
+    assert _wait_gone(database)
+
+
+def test_a_refused_pin_leaves_no_agent(runtime, database, opened,
+                                       monkeypatch):
+    _answers(monkeypatch)
+
+    def refuse(path):
+        raise ValueError('the two PINs do not match')
+
+    monkeypatch.setattr(cli, 'prompt_new_pin', refuse)
+    with pytest.raises(ValueError, match='do not match'):
+        cli._open(Settings(database, None, TTL), True)
+
+    assert _wait_gone(database)
+
+
+def test_an_empty_agent_is_filled_rather_than_refused(runtime, database,
+                                                      opened, monkeypatch):
+    _answers(monkeypatch)
+    assert agent.spawn(database, TTL)
+    try:
+        assert cli._open(Settings(database, None, TTL), True) == 'opened'
+        salt, blob = agent.connect(database).get()
+        assert unseal(blob, salt, PIN) == PASSWORD
+    finally:
+        agent.lock(database)
+
+
+def test_check_leaves_an_empty_agent_empty(runtime, database, opened,
+                                           monkeypatch):
+    _answers(monkeypatch)
+    assert agent.spawn(database, TTL)
+    try:
+        assert cli._open(Settings(database, None, TTL), False) == 'opened'
+        assert agent.connect(database).get() is None
+    finally:
+        agent.lock(database)

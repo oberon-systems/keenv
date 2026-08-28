@@ -104,7 +104,7 @@ def _handle(state: _State, request: dict) -> tuple[dict, bool]:
 
     if action == 'get':
         if state.blob is None:
-            return {'error': 'this agent holds nothing yet'}, False
+            return {'empty': True}, False
         return {
             'salt': bytes(state.salt).hex(),
             'blob': bytes(state.blob).hex(),
@@ -214,8 +214,11 @@ class Client:
             'blob': bytes(blob).hex(),
         })
 
-    def get(self) -> tuple[bytes, bytes]:
+    def get(self) -> tuple[bytes, bytes] | None:
+        """What the agent holds, or None while it holds nothing yet."""
         reply = self._call({'op': 'get'})
+        if reply.get('empty'):
+            return None
         return bytes.fromhex(reply['salt']), bytes.fromhex(reply['blob'])
 
     def ok(self) -> None:
