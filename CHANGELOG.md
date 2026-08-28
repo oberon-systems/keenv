@@ -1,3 +1,9 @@
+## 0.2.0 (2026-08-28)
+
+### Features
+
+- **agent**: remember the master password behind a PIN
+
 ## 0.1.2 (2026-08-26)
 
 ### Bug Fixes
