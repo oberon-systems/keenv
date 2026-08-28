@@ -24,6 +24,14 @@ def test_a_wrong_pin_gives_rubbish_rather_than_an_error():
     assert unseal(blob, salt, '654321') != PASSWORD
 
 
+def test_rubbish_that_is_not_even_text_comes_back_as_nothing():
+    salt = b'0123456789abcdef'
+    keystream = derive(PIN, salt)
+    rubbish = b'\xff\xfe'.ljust(BLOB, b'\0')
+    blob = bytes(a ^ b for a, b in zip(rubbish, keystream))
+    assert unseal(blob, salt, PIN) is None
+
+
 def test_the_blob_never_betrays_the_password_length():
     assert len(seal('a', PIN)[1]) == len(seal('a' * 100, PIN)[1]) == BLOB
 

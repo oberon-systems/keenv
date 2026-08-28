@@ -183,8 +183,9 @@ blob      = password padded to 128 bytes XOR keystream
 The agent holds that salt and that blob, and nothing else. The PIN is not
 stored, not even as a hash: it is checked by unsealing the blob and offering
 the result to the database, so a wrong PIN yields rubbish and the database is
-what turns it down. The padding is what keeps the blob from betraying how long
-the password is.
+what turns it down. Rubbish that is not even text never came out of a seal,
+and keenv names that a wrong PIN before it gets that far. The padding is what
+keeps the blob from betraying how long the password is.
 
 The agent is forked before the password is read, so the plaintext is never in
 its address space, not even inherited across the fork. It runs with core dumps

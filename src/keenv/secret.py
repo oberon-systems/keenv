@@ -66,15 +66,20 @@ def seal(password: str, pin: str) -> tuple[bytes, bytearray]:
     return salt, blob
 
 
-def unseal(blob: bytes, salt: bytes, pin: str) -> str:
+def unseal(blob: bytes, salt: bytes, pin: str) -> str | None:
     """Undo seal(). A wrong PIN gives rubbish rather than an error.
 
-    Rubbish is decoded, never rejected: the wrong PIN has to reach the
-    database and fail there, which is the only check this design has.
+    Rubbish that is text is handed back and has to reach the database and
+    fail there, which is the only real check this design has. Rubbish that
+    is not even UTF-8 never came out of seal(), and None says so rather
+    than leaving it to break the first thing that encodes it.
     """
     keystream = derive(pin, salt)
     opened = bytearray(a ^ b for a, b in zip(blob, keystream))
     wipe(keystream)
     password = bytes(opened).rstrip(b'\0')
     wipe(opened)
-    return password.decode('utf-8', 'surrogateescape')
+    try:
+        return password.decode('utf-8')
+    except UnicodeDecodeError:
+        return None

@@ -226,6 +226,29 @@ def test_a_wrong_pin_can_be_typed_again(runtime, database, opened,
         agent.lock(database)
 
 
+def test_a_wrong_pin_never_reaches_the_database_as_rubbish(runtime, database,
+                                                          opened, monkeypatch):
+    """The real unseal(), so the rubbish a wrong PIN gives is the real thing."""
+    _answers(monkeypatch)
+    cli._open(Settings(database, None, TTL), True)
+    try:
+        monkeypatch.setattr(cli, 'prompt_pin', lambda path: '999999')
+        monkeypatch.setattr(cli, 'say', lambda text: None)
+
+        def like_pykeepass(path, keyfile=None, password=None):
+            # pykeepass encodes the password, and that is where a wrong PIN
+            # used to die with a codec error instead of being named one.
+            if password.encode() != PASSWORD.encode():
+                raise WrongCredentials('nope')
+            return 'opened'
+
+        monkeypatch.setattr(cli, 'Vault', like_pykeepass)
+        with pytest.raises(ValueError, match='wrong PIN'):
+            cli._open(Settings(database, None, TTL), True)
+    finally:
+        agent.lock(database)
+
+
 def test_a_refused_pin_drops_an_agent_that_was_already_up(runtime, database,
                                                           opened,
                                                           monkeypatch):

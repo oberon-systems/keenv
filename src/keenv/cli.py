@@ -73,11 +73,24 @@ def _split_command(argv: list[str]) -> tuple[list[str], list[str]]:
     return argv[:index], argv[index + 1:]
 
 
+def _try_pin(path: Path, keyfile: Path | None,
+             salt: bytes, blob: bytes) -> Vault:
+    """Open the database with the PIN as typed, and nothing else.
+
+    Rubbish that is not even text never was the password, so it counts as a
+    wrong PIN here rather than as a codec error in whatever encodes it next.
+    """
+    password = unseal(blob, salt, prompt_pin(path))
+    if password is None:
+        raise WrongCredentials(f'{path}: wrong master password or key file')
+    return Vault(path, keyfile, password)
+
+
 def _from_agent(path: Path, keyfile: Path | None,
                 client: agent.Client) -> Vault | None:
     """Open with what the agent holds, or None while it holds nothing.
 
-    Nothing here checks the PIN: a wrong one simply unseals to rubbish and
+    Almost nothing here checks the PIN: a wrong one unseals to rubbish and
     the database is what turns it down.
     """
     held = client.get()
@@ -86,9 +99,8 @@ def _from_agent(path: Path, keyfile: Path | None,
 
     salt, blob = held
     for attempt in range(TRIES):
-        password = unseal(blob, salt, prompt_pin(path))
         try:
-            vault = Vault(path, keyfile, password)
+            vault = _try_pin(path, keyfile, salt, blob)
         except WrongCredentials:
             try:
                 client.fail()
