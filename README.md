@@ -15,6 +15,7 @@ R2 keys to OpenTofu.
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Usage](#usage)
+- [Remembering the password](#remembering-the-password)
 - [How it works](#how-it-works)
 - [Development](#development)
 
@@ -94,6 +95,10 @@ The layers apply in this order, each one overriding the last:
 A file that is not there is an empty layer, not an error. Having nothing to
 resolve after both layers is an error.
 
+`ttl:` is read from `keenv.yaml` and nowhere else. It has no flag and no
+environment variable, so nothing outside the file you can see can start
+remembering your master password.
+
 `keenv.yaml` is validated against a
 [pydantic](https://docs.pydantic.dev/) model that rejects keys it does not
 know, so `vualt:` is reported as a mistake rather than quietly ignored.
@@ -134,6 +139,99 @@ Exit codes are `0` on success, `1` for anything `keenv` can explain, `2` for a
 usage mistake, and `127` when the command does not exist. Otherwise the exit
 code is the command's own, because the command replaces `keenv`.
 
+## Remembering the password
+
+By default `keenv` remembers nothing. Every run asks for the master password,
+and none of it outlives the process. Stay in that mode unless typing the
+password is genuinely in the way.
+
+Setting `ttl:` turns on an agent that remembers it for a while, behind a PIN:
+
+```yaml
+vault: ~/Dropbox/oberon.kdbx
+ttl: 5m
+```
+
+The first run after that asks for the password and for a new PIN. Later runs
+ask only for the PIN:
+
+```console
+$ keenv run -- tofu plan
+Master password for /home/you/oberon.kdbx:
+New PIN (4 to 8 digits):
+Repeat the PIN:
+
+$ keenv run -- tofu apply
+PIN for /home/you/oberon.kdbx:
+```
+
+`keenv lock` forgets it at once, without waiting for the TTL. There is no
+`keenv unlock` on purpose: the first run that needs the password is the
+unlock, so there is no separate state to remember to set up.
+
+### What is kept, and where
+
+The agent never holds the master password in the clear. The client seals it
+before the agent ever sees it:
+
+```text
+keystream = argon2id(PIN, random salt, 128 bytes)
+blob      = password padded to 128 bytes XOR keystream
+```
+
+The agent holds that salt and that blob, and nothing else. The PIN is not
+stored, not even as a hash: it is checked by unsealing the blob and offering
+the result to the database, so a wrong PIN yields rubbish and the database is
+what turns it down. The padding is what keeps the blob from betraying how long
+the password is.
+
+The agent is forked before the password is read, so the plaintext is never in
+its address space, not even inherited across the fork. It runs with core dumps
+disabled, with `PR_SET_DUMPABLE` cleared so no other process of yours can
+attach to it or read its memory, and with its pages kept out of swap where the
+limits allow.
+
+Its socket and lock file sit in `$XDG_RUNTIME_DIR/keenv/`, named after a hash
+of the database path. Each database therefore gets one agent, shared by every
+project pointing at it. That directory is a tmpfs owned by you, so nothing
+survives a reboot, and nothing cryptographic is written there in any case: the
+lock file holds a pid, a socket path and a version.
+
+### The limits, plainly
+
+`ttl` takes `30s`, `5m` or a bare count of seconds, and must be more than zero
+and no more than fifteen minutes. Anything longer is a configuration error
+rather than a value quietly cut down to fit. The clock is idle-based: every
+successful run puts it back.
+
+Five failures inside five minutes and the agent wipes itself and exits. That
+catches a typo and a stuck script. It is **not** a defence against a hostile
+program: the agent never sees the PIN, so a program bent on guessing simply
+would not report its failures. What actually prices an attack is the cost of
+Argon2 and the length of the PIN.
+
+| PIN | Guesses | Roughly |
+| :--- | ---: | :--- |
+| 4 digits | 10 thousand | hours |
+| 6 digits | 1 million | weeks |
+| 8 digits | 100 million | years |
+
+Four digits are accepted, but `keenv` says what they cost and asks you to
+confirm.
+
+Two things this does not protect against, said outright:
+
+- Anyone who can both dump the agent's memory and obtain a copy of the
+  `.kdbx` can search for the PIN offline, at the price above. A database kept
+  in a synced folder is well within reach of that.
+- The client necessarily holds the password in the clear for as long as it
+  takes to open the database. `execvpe` then replaces the process, which is
+  the same guarantee the default mode gives.
+
+A key file is a different trade and needs none of this. It already opens the
+database without a prompt, so `ttl` does nothing alongside one, and `keenv`
+says so rather than starting an agent that would hold nothing.
+
 ## How it works
 
 1. Both layers are read and merged into one list of variables. A name defined
@@ -142,7 +240,7 @@ code is the command's own, because the command replaces `keenv`.
 2. If any of them is a `keenv://` reference, the database is opened once. The
    master password is asked for on `/dev/tty`, never on stdin, so a password
    prompt can never swallow the first line of a pipe. A key file replaces the
-   prompt.
+   prompt, and `ttl:` replaces it with a PIN for as long as the agent lives.
 3. Every reference is resolved from that one open database.
 4. The resolved variables are laid over a copy of the current environment and
    handed to `os.execvpe`.

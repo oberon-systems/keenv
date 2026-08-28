@@ -7,6 +7,7 @@ from pykeepass import PyKeePass
 from pykeepass.entry import Entry
 from pykeepass.exceptions import CredentialsError
 
+from .secret import check_pin, is_short
 from .uri import Reference
 
 # How many real paths a 'no entry' message names before it stops.
@@ -22,18 +23,42 @@ PROPERTIES = {
 }
 
 
-def prompt_password(vault: Path) -> str:
-    """Ask for the master password on the terminal, never on stdin.
+# What a short PIN really costs, said once and plainly.
+SHORT_PIN = (
+    'A 4-digit PIN is ten thousand guesses. Anyone holding both a dump of '
+    'the agent and a copy of the database can search that offline. Six '
+    'digits or more is the only thing that moves this much.'
+)
+
+
+def _hidden(prompt: str) -> str:
+    """Read a hidden answer on the terminal, never on stdin.
 
     Falling back to stdin would silently eat the first line of a pipe, so a
     session without a terminal is an error the caller has to fix.
     """
+    # 'w+' would need a seekable stream and a tty is not one; getpass
+    # opens /dev/tty itself to read, so writing the prompt is enough.
+    with open('/dev/tty', 'w', encoding='utf-8') as tty:
+        return getpass.getpass(prompt, stream=tty)
+
+
+def _confirm(question: str) -> bool:
+    """Put a question on the terminal and read the answer from it."""
     try:
-        # 'w+' would need a seekable stream and a tty is not one; getpass
-        # opens /dev/tty itself to read, so writing the prompt is enough.
-        with open('/dev/tty', 'w', encoding='utf-8') as tty:
-            prompt = f'Master password for {vault}: '
-            return getpass.getpass(prompt, stream=tty)
+        with open('/dev/tty', 'w', encoding='utf-8') as out:
+            out.write(question)
+            out.flush()
+            with open('/dev/tty', 'r', encoding='utf-8') as tty:
+                return tty.readline().strip().lower() in ('y', 'yes')
+    except OSError:
+        return False
+
+
+def prompt_password(vault: Path) -> str:
+    """Ask for the master password on the terminal, never on stdin."""
+    try:
+        return _hidden(f'Master password for {vault}: ')
     except OSError as exc:
         raise ValueError(
             f'no terminal to ask for the master password of {vault}; '
@@ -43,6 +68,35 @@ def prompt_password(vault: Path) -> str:
         raise ValueError(
             f'no master password given for {vault}',
         ) from exc
+
+
+def prompt_pin(vault: Path, prompt: str | None = None) -> str:
+    """Ask for the PIN, on the same terms as the master password."""
+    try:
+        return _hidden(prompt or f'PIN for {vault}: ')
+    except OSError as exc:
+        raise ValueError(
+            f'no terminal to ask for the PIN of {vault}; '
+            'run keenv from a terminal',
+        ) from exc
+    except EOFError as exc:
+        raise ValueError(f'no PIN given for {vault}') from exc
+
+
+def prompt_new_pin(vault: Path) -> str:
+    """Take a PIN twice over, and argue about it if it is a short one."""
+    pin = prompt_pin(vault, 'New PIN (4 to 8 digits): ')
+    check_pin(pin)
+    if pin != prompt_pin(vault, 'Repeat the PIN: '):
+        raise ValueError('the two PINs do not match')
+
+    if is_short(pin) and not _confirm(f'{SHORT_PIN}\nUse it anyway? [y/N] '):
+        raise ValueError('cancelled: choose a longer PIN')
+    return pin
+
+
+class WrongCredentials(ValueError):
+    """The database turned down the password or key file it was given."""
 
 
 class Vault:
@@ -64,7 +118,7 @@ class Vault:
                 keyfile=str(keyfile) if keyfile else None,
             )
         except CredentialsError as exc:
-            raise ValueError(
+            raise WrongCredentials(
                 f'{path}: wrong master password or key file',
             ) from exc
         self.path = path

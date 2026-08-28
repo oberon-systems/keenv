@@ -19,7 +19,33 @@ ENV_LINE = re.compile(
     r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$',
 )
 
+# The ceiling is deliberate: a remembered master password is a liability
+# that grows with the time it is kept, so the choice is not left open.
+TTL_CAP = 900
+
+DURATION = re.compile(r'^(\d+)([sm]?)$')
+
 Binding = Reference | str
+
+
+def parse_ttl(value: str | int) -> int:
+    """Read `30s`, `5m` or a bare count of seconds, within the ceiling."""
+    match = DURATION.match(str(value).strip())
+    if not match:
+        raise ValueError(
+            f'not a duration: {value!r}; write it as 30s, 5m or 900',
+        )
+
+    amount = int(match.group(1))
+    seconds = amount * 60 if match.group(2) == 'm' else amount
+    if seconds <= 0:
+        raise ValueError('must be more than zero')
+    if seconds > TTL_CAP:
+        raise ValueError(
+            f'must not exceed {TTL_CAP // 60}m, which is the longest '
+            'keenv will remember a master password',
+        )
+    return seconds
 
 
 class EntrySpec(BaseModel):
@@ -45,6 +71,7 @@ class ConfigFile(BaseModel):
 
     vault: Path | None = None
     keyfile: Path | None = None
+    ttl: int | None = None
     env: dict[str, EntrySpec] = {}
 
     @field_validator('vault', 'keyfile')
@@ -52,12 +79,18 @@ class ConfigFile(BaseModel):
     def _expand(cls, value: Path | None) -> Path | None:
         return value.expanduser() if value else None
 
+    @field_validator('ttl', mode='before')
+    @classmethod
+    def _duration(cls, value: str | int | None) -> int | None:
+        return None if value is None else parse_ttl(value)
+
 
 class Settings(NamedTuple):
-    """Which database to open and how."""
+    """Which database to open, how, and how long to remember it."""
 
     vault: Path | None
     keyfile: Path | None
+    ttl: int | None = None
 
 
 class Plan(NamedTuple):
@@ -108,7 +141,8 @@ def load_config(path: Path) -> Plan:
         for name, spec in config.env.items()
     }
     origins = {name: str(path) for name in bindings}
-    return Plan(Settings(config.vault, config.keyfile), bindings, origins)
+    settings = Settings(config.vault, config.keyfile, config.ttl)
+    return Plan(settings, bindings, origins)
 
 
 def load_env(path: Path) -> dict[str, Binding]:
@@ -157,5 +191,6 @@ def build(
         keyfile
         or _expand(os.environ.get('KEENV_KEYFILE'))
         or plan.settings.keyfile,
+        plan.settings.ttl,
     )
     return Plan(settings, bindings, origins)

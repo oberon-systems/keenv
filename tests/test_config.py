@@ -161,3 +161,47 @@ def test_build_records_the_file_each_variable_came_from(tmp_path):
         'ONLY_IN_CONFIG': str(config),
         'ONLY_IN_ENV': str(env),
     }
+
+
+def test_a_ttl_in_minutes_is_read(tmp_path):
+    config = write(tmp_path / 'keenv.yaml', 'ttl: 15m\n')
+    assert load_config(config).settings.ttl == 900
+
+
+def test_a_ttl_in_seconds_is_read(tmp_path):
+    config = write(tmp_path / 'keenv.yaml', 'ttl: 30s\n')
+    assert load_config(config).settings.ttl == 30
+
+
+def test_a_bare_ttl_counts_as_seconds(tmp_path):
+    config = write(tmp_path / 'keenv.yaml', 'ttl: 90\n')
+    assert load_config(config).settings.ttl == 90
+
+
+def test_no_ttl_means_nothing_is_remembered(tmp_path):
+    config = write(tmp_path / 'keenv.yaml', 'vault: /a.kdbx\n')
+    assert load_config(config).settings.ttl is None
+
+
+def test_a_ttl_past_the_ceiling_is_an_error(tmp_path):
+    config = write(tmp_path / 'keenv.yaml', 'ttl: 16m\n')
+    with pytest.raises(ValueError, match='must not exceed 15m'):
+        load_config(config)
+
+
+def test_an_hour_is_not_a_duration_keenv_takes(tmp_path):
+    config = write(tmp_path / 'keenv.yaml', 'ttl: 1h\n')
+    with pytest.raises(ValueError, match='not a duration'):
+        load_config(config)
+
+
+def test_a_zero_ttl_is_an_error(tmp_path):
+    config = write(tmp_path / 'keenv.yaml', 'ttl: 0\n')
+    with pytest.raises(ValueError, match='more than zero'):
+        load_config(config)
+
+
+def test_the_ttl_survives_the_merge(tmp_path):
+    config = write(tmp_path / 'keenv.yaml', 'ttl: 5m\nvault: /a.kdbx\n')
+    plan = build(config, tmp_path / '.env', vault=tmp_path / 'b.kdbx')
+    assert plan.settings.ttl == 300

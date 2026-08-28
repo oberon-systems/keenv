@@ -5,9 +5,24 @@ import os
 import sys
 from pathlib import Path
 
-from .config import DEFAULT_CONFIG, DEFAULT_ENV, Binding, Plan, build
+from . import agent
+from .config import (
+    DEFAULT_CONFIG,
+    DEFAULT_ENV,
+    Binding,
+    Plan,
+    Settings,
+    build,
+)
+from .secret import seal, unseal, wipe
 from .uri import Reference
-from .vault import Vault
+from .vault import (
+    Vault,
+    WrongCredentials,
+    prompt_new_pin,
+    prompt_password,
+    prompt_pin,
+)
 
 USAGE_ERROR = 2
 NOT_FOUND = 127
@@ -15,6 +30,7 @@ NOT_FOUND = 127
 ACTIONS = (
     ('run', 'run a command with the resolved environment'),
     ('check', 'resolve every reference and report, without the values'),
+    ('lock', 'forget the master password remembered for this database'),
 )
 
 
@@ -55,7 +71,70 @@ def _split_command(argv: list[str]) -> tuple[list[str], list[str]]:
     return argv[:index], argv[index + 1:]
 
 
-def _resolve(plan: Plan) -> dict[str, str]:
+def _from_agent(path: Path, keyfile: Path | None,
+                client: agent.Client) -> Vault:
+    """Open with what the agent holds, unsealed by the PIN.
+
+    Nothing here checks the PIN: a wrong one simply unseals to rubbish and
+    the database is what turns it down.
+    """
+    salt, blob = client.get()
+    password = unseal(blob, salt, prompt_pin(path))
+    try:
+        vault = Vault(path, keyfile, password)
+    except WrongCredentials:
+        client.fail()
+        raise ValueError(f'{path}: wrong PIN') from None
+    client.ok()
+    return vault
+
+
+def _unlock(path: Path, keyfile: Path | None, ttl: int) -> Vault:
+    """Take the master password and a new PIN, then seed the agent.
+
+    The agent is forked first and empty, so the plaintext password is
+    never in its address space, not even inherited across the fork.
+    """
+    started = agent.spawn(path, ttl)
+    password = prompt_password(path)
+    vault = Vault(path, keyfile, password)
+    if not started:
+        return vault
+
+    salt, blob = seal(password, prompt_new_pin(path))
+    client = agent.connect(path)
+    if client is not None:
+        client.put(salt, blob)
+    wipe(blob)
+    return vault
+
+
+def _open(settings: Settings, spawning: bool) -> Vault:
+    """Open the database, through the agent when the config asks for it."""
+    path, keyfile, ttl = settings
+    if ttl is None:
+        return Vault(path, keyfile)
+    if keyfile is not None:
+        print(
+            'keenv: ttl does nothing while a key file opens the database',
+            file=sys.stderr,
+        )
+        return Vault(path, keyfile)
+
+    try:
+        client = agent.connect(path)
+    except ValueError as exc:
+        print(f'keenv: no agent, {exc}', file=sys.stderr)
+        return Vault(path, keyfile)
+
+    if client is not None:
+        return _from_agent(path, keyfile, client)
+    if not spawning:
+        return Vault(path, keyfile)
+    return _unlock(path, keyfile, ttl)
+
+
+def _resolve(plan: Plan, spawning: bool = True) -> dict[str, str]:
     if not plan.bindings:
         raise ValueError(
             'nothing to resolve: no env in keenv.yaml and no .env',
@@ -68,7 +147,7 @@ def _resolve(plan: Plan) -> dict[str, str]:
                 'no vault: name it in keenv.yaml, in KEENV_VAULT '
                 'or with --vault',
             )
-        vault = Vault(plan.settings.vault, plan.settings.keyfile)
+        vault = _open(plan.settings, spawning)
 
     resolved: dict[str, str] = {}
     for name, value in plan.bindings.items():
@@ -89,8 +168,20 @@ def _describe(name: str, binding: Binding, value: str, origin: str) -> str:
     return f'{name:<28} {source:<52} {len(value):>3} chars  {origin}'
 
 
+def _lock(plan: Plan) -> int:
+    """Drop this database's agent. A missing one is not an error."""
+    vault = plan.settings.vault
+    if vault is None:
+        raise ValueError(
+            'no vault: name it in keenv.yaml, in KEENV_VAULT or with --vault',
+        )
+    dropped = 'agent dropped' if agent.lock(vault) else 'no agent running'
+    print(f'keenv: {vault}: {dropped}')
+    return 0
+
+
 def _check(plan: Plan) -> int:
-    resolved = _resolve(plan)
+    resolved = _resolve(plan, spawning=False)
     for name, binding in plan.bindings.items():
         origin = plan.origins.get(name, '')
         print(_describe(name, binding, resolved[name], origin))
@@ -107,6 +198,9 @@ def main(argv: list[str] | None = None) -> int:
         plan = build(
             options.config, options.env, options.vault, options.keyfile,
         )
+
+        if options.action == 'lock':
+            return _lock(plan)
 
         if options.action == 'check':
             return _check(plan)
