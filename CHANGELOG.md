@@ -1,3 +1,17 @@
+## 0.3.0 (2026-09-06)
+
+### Features
+
+- **config**: expand ${NAME} in a .env the way a shell would
+
+### Refactor
+
+- **tests**: hang the indent of a signature flake8 was rejecting
+
+### Build
+
+- **context**: removed local context settings
+
 ## 0.2.1 (2026-08-28)
 
 ### Bug Fixes
