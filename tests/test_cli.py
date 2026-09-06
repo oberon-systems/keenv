@@ -2,7 +2,7 @@ import subprocess
 import sys
 
 from conftest import ACCESS_KEY, SECRET_KEY
-from keenv.cli import main
+from keenv.cli import _parser, main
 
 
 def keenv(*arguments):
@@ -125,3 +125,41 @@ def test_a_missing_entry_names_the_variable_and_the_file(
     error = capsys.readouterr().err
     assert 'it is at Oberon/R2/indech-state' in error
     assert f'TOKEN comes from {env_file}' in error
+
+
+def test_an_interrupted_prompt_is_a_line_not_a_traceback(monkeypatch, capsys):
+    def interrupt(*arguments):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr('keenv.cli.build', interrupt)
+    assert main(['run', '--', 'true']) == 130
+
+    captured = capsys.readouterr()
+    assert 'cancelled' in captured.err
+    assert 'Traceback' not in captured.err
+
+
+def test_a_pipe_gets_no_colour(config_file, keyfile, tmp_path):
+    result = keenv(
+        'check', '-c', str(config_file), '-e', str(tmp_path / '.env'),
+        '--keyfile', str(keyfile),
+    )
+    assert result.returncode == 0, result.stderr
+    assert '\x1b' not in result.stdout
+    assert '\x1b' not in result.stderr
+
+
+def test_check_counts_on_stderr_so_the_table_stays_data(
+        config_file, keyfile, tmp_path,
+):
+    result = keenv(
+        'check', '-c', str(config_file), '-e', str(tmp_path / '.env'),
+        '--keyfile', str(keyfile),
+    )
+    assert 'variables resolved' in result.stderr
+    assert 'resolved' not in result.stdout
+
+
+def test_no_color_is_accepted_by_every_action():
+    for action in ('run', 'check', 'lock'):
+        assert _parser().parse_args([action, '--no-color']).no_color

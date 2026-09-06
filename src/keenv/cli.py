@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import agent
+from . import agent, paint
 from .config import (
     DEFAULT_CONFIG,
     DEFAULT_ENV,
@@ -28,6 +28,7 @@ from .vault import (
 
 USAGE_ERROR = 2
 NOT_FOUND = 127
+CANCELLED = 130
 
 ACTIONS = (
     ('run', 'run a command with the resolved environment'),
@@ -61,6 +62,10 @@ def _parser() -> argparse.ArgumentParser:
         sub.add_argument(
             '--keyfile', type=Path, default=None,
             help='key file for the database',
+        )
+        sub.add_argument(
+            '--no-color', action='store_true',
+            help='print without colour, as a pipe or NO_COLOR already does',
         )
 
     return parser
@@ -111,7 +116,7 @@ def _from_agent(path: Path, keyfile: Path | None,
                 ) from None
             if attempt + 1 == TRIES:
                 break
-            say('keenv: wrong PIN, try again')
+            say(paint.info('keenv: wrong PIN, try again'))
             continue
         client.ok()
         return vault
@@ -129,7 +134,7 @@ def _seed(path: Path, keyfile: Path | None,
     except agent.Gone:
         # The database is open either way, so an agent that died meanwhile
         # costs this run nothing but the remembering.
-        say('keenv: the agent went away, this run only')
+        say(paint.info('keenv: the agent went away, this run only'))
     finally:
         wipe(blob)
     return vault
@@ -169,16 +174,15 @@ def _open(settings: Settings, spawning: bool) -> Vault:
     if ttl is None:
         return Vault(path, keyfile)
     if keyfile is not None:
-        print(
+        paint.warn(
             'keenv: ttl does nothing while a key file opens the database',
-            file=sys.stderr,
         )
         return Vault(path, keyfile)
 
     try:
         client = agent.connect(path)
     except ValueError as exc:
-        print(f'keenv: no agent, {exc}', file=sys.stderr)
+        paint.warn(f'keenv: no agent, {exc}')
         return Vault(path, keyfile)
 
     try:
@@ -193,7 +197,7 @@ def _open(settings: Settings, spawning: bool) -> Vault:
             return _fill(path, keyfile, client)
         return _unlock(path, keyfile, ttl)
     except agent.Gone as exc:
-        print(f'keenv: {exc}', file=sys.stderr)
+        paint.warn(f'keenv: {exc}')
         return Vault(path, keyfile)
 
 
@@ -227,8 +231,17 @@ def _resolve(plan: Plan, spawning: bool = True) -> dict[str, str]:
 
 
 def _describe(name: str, binding: Binding, value: str, origin: str) -> str:
-    source = str(binding) if isinstance(binding, Reference) else 'literal'
-    return f'{name:<28} {source:<52} {len(value):>3} chars  {origin}'
+    reference = isinstance(binding, Reference)
+    source = str(binding) if reference else 'literal'
+    out = sys.stdout
+    # Each column is padded before it is tinted: an escape sequence counts
+    # towards a width and would push every column after it out of line.
+    return ' '.join((
+        paint.bright(f'{name:<28}', out),
+        (paint.link if reference else paint.dim)(f'{source:<52}', out),
+        paint.plain(f'{len(value):>3} chars', out),
+        paint.dim(f' {origin}', out),
+    ))
 
 
 def _lock(plan: Plan) -> int:
@@ -239,7 +252,7 @@ def _lock(plan: Plan) -> int:
             'no vault: name it in keenv.yaml, in KEENV_VAULT or with --vault',
         )
     dropped = 'agent dropped' if agent.lock(vault) else 'no agent running'
-    print(f'keenv: {vault}: {dropped}')
+    print(paint.good(f'keenv: {vault}: {dropped}', sys.stdout))
     return 0
 
 
@@ -248,6 +261,13 @@ def _check(plan: Plan) -> int:
     for name, binding in plan.bindings.items():
         origin = plan.origins.get(name, '')
         print(_describe(name, binding, resolved[name], origin))
+
+    # The count goes to stderr so a redirected table stays only the table.
+    noun = 'variable' if len(resolved) == 1 else 'variables'
+    print(
+        paint.good(f'keenv: {len(resolved)} {noun} resolved', sys.stderr),
+        file=sys.stderr,
+    )
     return 0
 
 
@@ -256,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
     given = list(sys.argv[1:] if argv is None else argv)
     given, command = _split_command(given)
     options = _parser().parse_args(given)
+    if options.no_color:
+        paint.disable()
 
     try:
         plan = build(
@@ -269,20 +291,21 @@ def main(argv: list[str] | None = None) -> int:
             return _check(plan)
 
         if not command:
-            print(
-                'keenv run needs a command: keenv run -- tofu plan',
-                file=sys.stderr,
-            )
+            paint.error('keenv run needs a command: keenv run -- tofu plan')
             return USAGE_ERROR
 
         environment = dict(os.environ)
         environment.update(_resolve(plan))
         os.execvpe(command[0], command, environment)
     except ValueError as exc:
-        print(f'keenv: {exc}', file=sys.stderr)
+        paint.error(f'keenv: {exc}')
         return 1
     except FileNotFoundError:
-        print(f'keenv: command not found: {command[0]}', file=sys.stderr)
+        paint.error(f'keenv: command not found: {command[0]}')
         return NOT_FOUND
+    except KeyboardInterrupt:
+        # getpass leaves the cursor on its prompt, so the line starts one.
+        paint.warn('\nkeenv: cancelled')
+        return CANCELLED
 
     return 0

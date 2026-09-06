@@ -7,6 +7,7 @@ from pykeepass import PyKeePass
 from pykeepass.entry import Entry
 from pykeepass.exceptions import CredentialsError
 
+from . import paint
 from .secret import BadPin, check_pin, is_short
 from .uri import Reference
 
@@ -70,7 +71,7 @@ def _confirm(question: str) -> bool:
 def prompt_password(vault: Path) -> str:
     """Ask for the master password on the terminal, never on stdin."""
     try:
-        return _hidden(f'Master password for {vault}: ')
+        return _hidden(paint.info(f'Master password for {vault}: '))
     except OSError as exc:
         raise ValueError(
             f'no terminal to ask for the master password of {vault}; '
@@ -85,7 +86,7 @@ def prompt_password(vault: Path) -> str:
 def prompt_pin(vault: Path, prompt: str | None = None) -> str:
     """Ask for the PIN, on the same terms as the master password."""
     try:
-        return _hidden(prompt or f'PIN for {vault}: ')
+        return _hidden(paint.info(prompt or f'PIN for {vault}: '))
     except OSError as exc:
         raise ValueError(
             f'no terminal to ask for the PIN of {vault}; '
@@ -102,8 +103,10 @@ def _new_pin(vault: Path) -> str:
     if pin != prompt_pin(vault, 'Repeat the PIN: '):
         raise BadPin('the two PINs do not match')
 
-    if is_short(pin) and not _confirm(f'{SHORT_PIN}\nUse it anyway? [y/N] '):
-        raise BadPin('cancelled: choose a longer PIN')
+    if is_short(pin):
+        question = paint.info(f'{SHORT_PIN}\nUse it anyway? [y/N] ')
+        if not _confirm(question):
+            raise BadPin('cancelled: choose a longer PIN')
     return pin
 
 
@@ -120,7 +123,7 @@ def prompt_new_pin(vault: Path) -> str:
         except BadPin as exc:
             reason = str(exc)
             if attempt + 1 < TRIES:
-                say(f'keenv: {reason}, try again')
+                say(paint.info(f'keenv: {reason}, try again'))
     raise ValueError(f'{reason}, after {TRIES} attempts')
 
 

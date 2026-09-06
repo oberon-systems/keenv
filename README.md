@@ -150,7 +150,9 @@ TF_LOG                       literal                                            
 ```
 
 The last column is the file the variable came from, which is the quickest
-way to see that a `.env` is overriding `keenv.yaml`.
+way to see that a `.env` is overriding `keenv.yaml`. The table goes to stdout
+and the count that closes it to stderr, so `keenv check > list` writes the
+table and nothing else.
 
 Point at another database and another mapping:
 
@@ -159,8 +161,28 @@ keenv run --vault ~/other.kdbx -e deploy.env -- ./deploy.sh
 ```
 
 Exit codes are `0` on success, `1` for anything `keenv` can explain, `2` for a
-usage mistake, and `127` when the command does not exist. Otherwise the exit
-code is the command's own, because the command replaces `keenv`.
+usage mistake, `127` when the command does not exist, and `130` when the run
+was cancelled at a prompt. Otherwise the exit code is the command's own,
+because the command replaces `keenv`.
+
+Ctrl-C at the master password or the PIN ends the run on one line, not on a
+traceback, and an agent that had been forked but never filled is dropped with
+it.
+
+### Colour
+
+`keenv` colours what it says in [Solarized](https://ethanschoonover.com/solarized/)
+dark: yellow for something worth knowing that it carried on past, green for a
+thing that worked, red for the line a run ends on. A `keenv://` reference in
+the `check` table is blue, and the file a variable came from is dimmed.
+
+Colour is for terminals only. It goes away when the output is a pipe or a
+file, when `NO_COLOR` is set to anything, when `TERM` is `dumb`, and when
+`--no-color` is passed:
+
+```bash
+keenv check --no-color
+```
 
 ## Remembering the password
 
