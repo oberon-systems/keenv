@@ -226,9 +226,10 @@ def test_a_wrong_pin_can_be_typed_again(runtime, database, opened,
         agent.lock(database)
 
 
-def test_a_wrong_pin_never_reaches_the_database_as_rubbish(runtime, database,
-                                                          opened, monkeypatch):
-    """The real unseal(), so the rubbish a wrong PIN gives is the real thing."""
+def test_a_wrong_pin_never_reaches_the_database_as_rubbish(
+    runtime, database, opened, monkeypatch,
+):
+    """The real unseal(), so the rubbish a wrong PIN gives is genuine."""
     _answers(monkeypatch)
     cli._open(Settings(database, None, TTL), True)
     try:
