@@ -52,6 +52,81 @@ def test_env_reports_the_line_of_a_broken_reference(tmp_path):
         load_env(path)
 
 
+def test_env_expands_a_variable_from_the_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv('PWD', '/home/zombig/oberon/balor')
+    path = write(tmp_path / '.env', 'SUIL_BASE_DIR="${PWD}"\n')
+    assert load_env(path) == {'SUIL_BASE_DIR': '/home/zombig/oberon/balor'}
+
+
+def test_env_expands_a_name_without_braces(tmp_path, monkeypatch):
+    monkeypatch.setenv('STAGE', 'prod')
+    path = write(tmp_path / '.env', 'CLUSTER=$STAGE-eu\n')
+    assert load_env(path) == {'CLUSTER': 'prod-eu'}
+
+
+def test_env_expands_a_literal_declared_earlier(tmp_path, monkeypatch):
+    monkeypatch.setenv('PWD', '/home/zombig/oberon')
+    path = write(tmp_path / '.env', '\n'.join([
+        'PROJECT=balor',
+        'SUIL_BASE_DIR="${PWD}/${PROJECT}"',
+    ]))
+    assert load_env(path)['SUIL_BASE_DIR'] == '/home/zombig/oberon/balor'
+
+
+def test_env_beats_the_environment_it_expands_from(tmp_path, monkeypatch):
+    monkeypatch.setenv('STAGE', 'from-environment')
+    path = write(tmp_path / '.env', 'STAGE=from-file\nCLUSTER="${STAGE}"\n')
+    assert load_env(path)['CLUSTER'] == 'from-file'
+
+
+def test_env_leaves_a_single_quoted_value_alone(tmp_path, monkeypatch):
+    monkeypatch.setenv('PWD', '/home/zombig')
+    path = write(tmp_path / '.env', "LITERAL='${PWD}'\n")
+    assert load_env(path) == {'LITERAL': '${PWD}'}
+
+
+def test_env_keeps_an_escaped_dollar(tmp_path):
+    path = write(tmp_path / '.env', 'PRICE="100\\$"\n')
+    assert load_env(path) == {'PRICE': '100$'}
+
+
+def test_env_expands_a_name_that_is_not_set_to_nothing(tmp_path, monkeypatch):
+    monkeypatch.delenv('NOWHERE', raising=False)
+    path = write(tmp_path / '.env', 'EMPTY="a${NOWHERE}b"\n')
+    assert load_env(path) == {'EMPTY': 'ab'}
+
+
+def test_env_takes_the_default_when_the_name_is_not_set(tmp_path, monkeypatch):
+    monkeypatch.delenv('TF_LOG', raising=False)
+    path = write(tmp_path / '.env', 'LOG="${TF_LOG:-INFO}"\n')
+    assert load_env(path) == {'LOG': 'INFO'}
+
+
+def test_env_takes_the_default_when_the_name_is_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv('TF_LOG', '')
+    path = write(tmp_path / '.env', 'LOG="${TF_LOG:-INFO}"\n')
+    assert load_env(path) == {'LOG': 'INFO'}
+
+
+def test_env_expands_inside_a_reference(tmp_path, monkeypatch):
+    monkeypatch.setenv('STAGE', 'prod')
+    path = write(
+        tmp_path / '.env', 'KEY=keenv://Oberon/vaults/${STAGE}-age/password\n',
+    )
+    assert load_env(path) == {
+        'KEY': Reference(('Oberon', 'vaults', 'prod-age'), 'Password'),
+    }
+
+
+def test_env_refuses_to_expand_a_secret_into_another_value(tmp_path):
+    path = write(tmp_path / '.env', '\n'.join([
+        'KEY=keenv://Oberon/A/password',
+        'LEAK="${KEY}"',
+    ]))
+    with pytest.raises(ValueError, match=':2:.*never'):
+        load_env(path)
+
+
 def test_config_reads_the_vault_and_the_entries(tmp_path):
     path = write(tmp_path / 'keenv.yaml', '\n'.join([
         'vault: ~/vault.kdbx',

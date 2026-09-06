@@ -19,6 +19,14 @@ ENV_LINE = re.compile(
     r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$',
 )
 
+# What a shell would expand while sourcing the same file, and nothing more:
+# ${NAME}, ${NAME:-default} and $NAME, with \$ standing for the dollar itself.
+EXPANSION = re.compile(
+    r'\\(?P<escaped>\$)'
+    r'|\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>[^}]*))?\}'
+    r'|\$(?P<bare>[A-Za-z_][A-Za-z0-9_]*)',
+)
+
 # The ceiling is deliberate: a remembered master password is a liability
 # that grows with the time it is kept, so the choice is not left open.
 TTL_CAP = 900
@@ -105,9 +113,34 @@ def _expand(value: str | None) -> Path | None:
     return Path(value).expanduser() if value else None
 
 
-def _unquote(value: str) -> str:
+def _unquote(value: str) -> tuple[str, str]:
+    """The value without its quotes, and the quote it was written with."""
     quoted = len(value) >= 2 and value[0] == value[-1]
-    return value[1:-1] if quoted and value[0] in ('"', "'") else value
+    if quoted and value[0] in ('"', "'"):
+        return value[1:-1], value[0]
+    return value, ''
+
+
+def expand(value: str, source: dict[str, Binding]) -> str:
+    """Substitute ${NAME}, ${NAME:-default} and $NAME out of `source`.
+
+    A name that is not set expands to nothing, the way a shell sourcing the
+    file would have it; `${NAME:-default}` is how a value is given instead.
+    """
+    def one(match: re.Match[str]) -> str:
+        if match.group('escaped'):
+            return '$'
+
+        name = match.group('braced') or match.group('bare')
+        held = source.get(name)
+        if isinstance(held, Reference):
+            raise ValueError(
+                f'{name} is a keenv:// reference, and a secret is never '
+                'substituted into another value',
+            )
+        return held or match.group('default') or ''
+
+    return EXPANSION.sub(one, value)
 
 
 def _explain(path: Path, error: ValidationError) -> str:
@@ -146,7 +179,7 @@ def load_config(path: Path) -> Plan:
 
 
 def load_env(path: Path) -> dict[str, Binding]:
-    """Read a .env. keenv:// values resolve, everything else is literal."""
+    """Read a .env: ${NAME} expands, keenv:// resolves, the rest is literal."""
     if not path.is_file():
         return {}
 
@@ -160,8 +193,10 @@ def load_env(path: Path) -> dict[str, Binding]:
         if not match:
             raise ValueError(f'{path}:{number}: not a NAME=value line')
 
-        name, value = match.group(1), _unquote(match.group(2))
+        name, (value, quote) = match.group(1), _unquote(match.group(2))
         try:
+            if quote != "'":
+                value = expand(value, {**os.environ, **bindings})
             bindings[name] = parse(value) if is_reference(value) else value
         except ValueError as exc:
             raise ValueError(f'{path}:{number}: {exc}') from exc

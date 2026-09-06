@@ -6,6 +6,7 @@ environment of one command and nowhere else. The values never reach a file, an
 `exec`ing the command, and the process that held them is replaced.
 
 It is the tool the Oberon Systems keyring policy names for local secrets.
+
 ## Contents
 
 - [Why](#why)
@@ -79,6 +80,31 @@ copied straight out of KeePass works as it stands.
 Values that are not references pass through literally. A `#` only starts a
 comment at the beginning of a line, never in the middle of one, because a
 secret may contain it.
+
+Before anything else, `keenv` expands the `.env` the way a shell sourcing it
+would, so a file that works under `source .env` works under `keenv run`:
+
+```dotenv
+PROJECT=balor
+SUIL_BASE_DIR="${PWD}/${PROJECT}"
+TF_LOG="${TF_LOG:-INFO}"
+AGE_KEY=keenv://Oberon/vaults/${PROJECT}-age/password
+LITERAL='no ${expansion} here'
+PRICE="100\$"
+```
+
+A name is looked up in the environment `keenv` was called in, and in the lines
+above it in the same file, which is why `${PROJECT}` works there. It expands
+inside a `keenv://` reference as well, so one file can serve several
+environments. Single quotes expand nothing and `\$` is a dollar of its own.
+
+A name that is not set expands to nothing, silently, as it does in a shell;
+`${NAME:-default}` is how a value is given instead. `keenv.yaml` is not
+expanded - only the `.env` is.
+
+A value read out of the database is never substituted into another value:
+`${NAME}` naming a `keenv://` variable is an error, not a secret quietly
+copied somewhere it was not asked for.
 
 The layers apply in this order, each one overriding the last:
 
