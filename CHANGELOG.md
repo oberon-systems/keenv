@@ -1,3 +1,9 @@
+## 0.3.1 (2026-09-06)
+
+### Bug Fixes
+
+- **cli**: show normal message on app quit
+
 ## 0.3.0 (2026-09-06)
 
 ### Features
