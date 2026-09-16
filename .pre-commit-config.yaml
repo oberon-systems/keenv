@@ -65,17 +65,18 @@ repos:
   # isolation and .cz.yaml names wyld_cz. Without the extra dependency the hook
   # fails with "The committer has not been found in the system".
   #
-  # The three versions move together. wyld-cz 0.2.1 requires commitizen >=4.9,<5
-  # and is the first release implementing schema_pattern(); on 0.1.0 the hook
-  # raises NotImplementedError on every commit. Keep this rev, the pin in
-  # requirements.txt and the provider release in step.
+  # The three versions move together. wyld-cz requires commitizen >=4.9,<5 and
+  # implements schema_pattern() since 0.2.1; on 0.1.0 the hook raises
+  # NotImplementedError on every commit. Dependabot bumps this rev and
+  # requirements.txt in separate PRs and never touches additional_dependencies:
+  # land them together and move the wyld-cz pins by hand.
   - repo: https://github.com/commitizen-tools/commitizen
-    rev: v4.17.0
+    rev: v4.18.1
     hooks:
       - id: commitizen
-        additional_dependencies: [wyld-cz==0.2.1]
+        additional_dependencies: [wyld-cz==0.3.0]
       - id: commitizen-branch
-        additional_dependencies: [wyld-cz==0.2.1]
+        additional_dependencies: [wyld-cz==0.3.0]
         stages: [pre-push]
 
   - repo: meta
