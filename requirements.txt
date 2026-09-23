@@ -1,4 +1,4 @@
 -e .
 commitizen==4.18.1
 pre-commit==4.6.2
-wyld-cz==0.3.0
+wyld-cz==0.3.1
