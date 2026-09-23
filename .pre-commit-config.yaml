@@ -74,9 +74,9 @@ repos:
     rev: v4.18.1
     hooks:
       - id: commitizen
-        additional_dependencies: [wyld-cz==0.3.0]
+        additional_dependencies: [wyld-cz==0.3.1]
       - id: commitizen-branch
-        additional_dependencies: [wyld-cz==0.3.0]
+        additional_dependencies: [wyld-cz==0.3.1]
         stages: [pre-push]
 
   - repo: meta
