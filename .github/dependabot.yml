@@ -1,14 +1,34 @@
+# Weekly update pull requests for the Python requirements, the pre-commit hooks
+# and the GitHub Actions; minor and patch updates of one ecosystem are grouped.
 version: 2
+
 updates:
-  - package-ecosystem: "pip"
+  - package-ecosystem: pip
     directory: "/"
     schedule:
-      interval: "weekly"
-  - package-ecosystem: "pre-commit"
+      interval: weekly
+    commit-message:
+      prefix: "[build][deps]"
+    groups:
+      pip:
+        update-types: [minor, patch]
+
+  - package-ecosystem: pre-commit
     directory: "/"
     schedule:
-      interval: "weekly"
-  - package-ecosystem: "github-actions"
+      interval: weekly
+    commit-message:
+      prefix: "[build][deps]"
+    groups:
+      pre-commit:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: weekly
+    commit-message:
+      prefix: "[build][deps]"
+    groups:
+      github-actions:
+        update-types: [minor, patch]
