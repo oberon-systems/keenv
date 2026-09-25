@@ -73,7 +73,7 @@ repos:
   # requirements.txt in separate PRs and never touches additional_dependencies:
   # land them together and move the wyld-cz pins by hand.
   - repo: https://github.com/commitizen-tools/commitizen
-    rev: v4.18.1
+    rev: v4.19.0
     hooks:
       - id: commitizen
         additional_dependencies: [wyld-cz==0.3.1]
