@@ -46,6 +46,8 @@ repos:
     hooks:
       - id: markdownlint
         exclude: CHANGELOG.md
+        # markdownlint-cli v0.49 needs node >=22; the "system" env may bind to distro node 18.
+        language_version: 24.19.0
 
   - repo: https://github.com/jumanjihouse/pre-commit-hooks
     rev: 3.0.0
