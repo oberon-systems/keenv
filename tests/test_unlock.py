@@ -183,6 +183,21 @@ def test_a_refused_pin_leaves_no_agent(runtime, database, opened,
     assert _wait_gone(database)
 
 
+def test_an_empty_pin_runs_without_the_agent(runtime, database, opened,
+                                             monkeypatch):
+    _answers(monkeypatch)
+    said, slept = [], []
+    monkeypatch.setattr(cli, 'prompt_new_pin', lambda path: None)
+    monkeypatch.setattr(cli, 'say', said.append)
+    monkeypatch.setattr(cli, 'sleep', slept.append)
+
+    assert cli._open(Settings(database, None, TTL), True) == 'opened'
+    assert opened == [PASSWORD]
+    assert slept == [cli.SKIP_PAUSE]
+    assert any('without the agent' in line for line in said)
+    assert _wait_gone(database)
+
+
 def test_an_empty_agent_is_filled_rather_than_refused(runtime, database,
                                                       opened, monkeypatch):
     _answers(monkeypatch)

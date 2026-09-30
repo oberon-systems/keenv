@@ -96,9 +96,14 @@ def prompt_pin(vault: Path, prompt: str | None = None) -> str:
         raise ValueError(f'no PIN given for {vault}') from exc
 
 
-def _new_pin(vault: Path) -> str:
-    """Take a PIN twice over, and argue about it if it is a short one."""
-    pin = prompt_pin(vault, 'New PIN (4 to 8 digits): ')
+def _new_pin(vault: Path) -> str | None:
+    """Take a PIN twice over, and argue about it if it is a short one.
+
+    An empty answer is no PIN at all: the run goes on without the agent.
+    """
+    pin = prompt_pin(vault, 'New PIN (4 to 8 digits, Enter to skip): ')
+    if not pin:
+        return None
     check_pin(pin)
     if pin != prompt_pin(vault, 'Repeat the PIN: '):
         raise BadPin('the two PINs do not match')
@@ -110,7 +115,7 @@ def _new_pin(vault: Path) -> str:
     return pin
 
 
-def prompt_new_pin(vault: Path) -> str:
+def prompt_new_pin(vault: Path) -> str | None:
     """Ask for a PIN until one will do, or until the tries run out.
 
     Only a bad answer is asked again. A missing terminal arrives here as a

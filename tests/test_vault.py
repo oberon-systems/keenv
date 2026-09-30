@@ -163,3 +163,8 @@ def test_a_pin_wrong_three_times_gives_up(vault_path, monkeypatch):
     _pins(monkeypatch, ['12', '34', '56'])
     with pytest.raises(ValueError, match='after 3 attempts'):
         prompt_new_pin(vault_path)
+
+
+def test_an_empty_new_pin_skips_the_agent(vault_path, monkeypatch):
+    _pins(monkeypatch, [''])
+    assert prompt_new_pin(vault_path) is None

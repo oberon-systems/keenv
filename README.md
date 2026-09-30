@@ -206,12 +206,17 @@ ask only for the PIN:
 ```console
 $ keenv run -- tofu plan
 Master password for /home/you/oberon.kdbx:
-New PIN (4 to 8 digits):
+New PIN (4 to 8 digits, Enter to skip):
 Repeat the PIN:
 
 $ keenv run -- tofu apply
 PIN for /home/you/oberon.kdbx:
 ```
+
+Pressing Enter at `New PIN` instead of typing one skips the agent for that
+run. `keenv` says `running without the agent`, waits two seconds so that
+Ctrl-C can still stop the run, and goes on with the database it has already
+opened. Nothing is remembered, so the next run asks for the password again.
 
 `keenv lock` forgets it at once, without waiting for the TTL. There is no
 `keenv unlock` on purpose: the first run that needs the password is the

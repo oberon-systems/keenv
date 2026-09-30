@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from time import sleep
 
 from . import agent, ovpn, paint
 from .config import (
@@ -30,6 +31,9 @@ from .vault import (
 USAGE_ERROR = 2
 NOT_FOUND = 127
 CANCELLED = 130
+
+# Long enough to read the line and still Ctrl-C out of an unwanted run.
+SKIP_PAUSE = 2
 
 ACTIONS = (
     ('run', 'run a command with the resolved environment'),
@@ -142,7 +146,14 @@ def _seed(path: Path, keyfile: Path | None,
     """Take the master password and a new PIN, then fill an empty agent."""
     password = prompt_password(path)
     vault = Vault(path, keyfile, password)
-    salt, blob = seal(password, prompt_new_pin(path))
+    pin = prompt_new_pin(path)
+    if pin is None:
+        say(paint.info('keenv: no PIN, running without the agent'))
+        sleep(SKIP_PAUSE)
+        agent.lock(path)
+        return vault
+
+    salt, blob = seal(password, pin)
     try:
         client.put(salt, blob)
     except agent.Gone:
