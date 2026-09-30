@@ -7,6 +7,7 @@ import os
 import resource
 import socket
 import struct
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -25,9 +26,14 @@ MCL_FUTURE = 2
 
 READY = b'1'
 
+MACOS = sys.platform == 'darwin'
+
 
 def _home() -> Path:
     runtime = os.environ.get('XDG_RUNTIME_DIR')
+    if not runtime and MACOS:
+        # macOS has no XDG_RUNTIME_DIR; TMPDIR is its per-user 0700 directory.
+        runtime = os.environ.get('TMPDIR')
     if not runtime:
         raise ValueError(
             'no XDG_RUNTIME_DIR: keenv will not keep an agent anywhere '
@@ -132,8 +138,22 @@ def _readline(conn: socket.socket) -> bytes:
     return bytes(chunks).split(b'\n', 1)[0]
 
 
+def _peer_uid_macos(conn: socket.socket) -> int | None:
+    uid, gid = ctypes.c_uint32(), ctypes.c_uint32()
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        failed = libc.getpeereid(
+            conn.fileno(), ctypes.byref(uid), ctypes.byref(gid),
+        )
+    except (OSError, AttributeError):
+        return None
+    return None if failed else uid.value
+
+
 def _ours(conn: socket.socket) -> bool:
     """Whether the peer runs as us. A different uid is never served."""
+    if MACOS:
+        return _peer_uid_macos(conn) == os.getuid()
     raw = conn.getsockopt(
         socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'),
     )

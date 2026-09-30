@@ -1,4 +1,9 @@
+import shutil
+import socket
+import sys
+import tempfile
 import time
+from pathlib import Path
 
 import pytest
 
@@ -12,10 +17,16 @@ TIMEOUT = 10.0
 @pytest.fixture(name='runtime')
 def runtime_fixture(tmp_path, monkeypatch):
     """Point the agent at a throwaway runtime directory."""
-    home = tmp_path / 'run'
-    home.mkdir()
+    if sys.platform == 'darwin':
+        # A socket path is capped at 104 bytes there; tmp_path runs longer.
+        home = Path(tempfile.mkdtemp(dir='/tmp'))
+    else:
+        home = tmp_path / 'run'
+        home.mkdir()
     monkeypatch.setenv('XDG_RUNTIME_DIR', str(home))
-    return home
+    yield home
+    if sys.platform == 'darwin':
+        shutil.rmtree(home, ignore_errors=True)
 
 
 @pytest.fixture(name='database')
@@ -168,3 +179,24 @@ def test_a_vanished_agent_is_reported_as_a_value_error(runtime, database):
 
     with pytest.raises(agent.Gone):
         client.get()
+
+
+def test_a_peer_of_the_same_user_is_ours():
+    left, right = socket.socketpair(socket.AF_UNIX)
+    with left, right:
+        assert agent._ours(left)
+
+
+def test_macos_keeps_the_agent_in_tmpdir(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, 'MACOS', True)
+    monkeypatch.delenv('XDG_RUNTIME_DIR', raising=False)
+    monkeypatch.setenv('TMPDIR', str(tmp_path))
+    assert agent._home() == tmp_path / 'keenv'
+
+
+def test_linux_never_falls_back_to_tmpdir(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, 'MACOS', False)
+    monkeypatch.delenv('XDG_RUNTIME_DIR', raising=False)
+    monkeypatch.setenv('TMPDIR', str(tmp_path))
+    with pytest.raises(ValueError, match='XDG_RUNTIME_DIR'):
+        agent._home()

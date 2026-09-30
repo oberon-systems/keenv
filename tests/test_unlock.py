@@ -1,4 +1,8 @@
+import shutil
+import sys
+import tempfile
 import time
+from pathlib import Path
 
 import pytest
 
@@ -15,10 +19,16 @@ TIMEOUT = 10.0
 
 @pytest.fixture(name='runtime')
 def runtime_fixture(tmp_path, monkeypatch):
-    home = tmp_path / 'run'
-    home.mkdir()
+    if sys.platform == 'darwin':
+        # A socket path is capped at 104 bytes there; tmp_path runs longer.
+        home = Path(tempfile.mkdtemp(dir='/tmp'))
+    else:
+        home = tmp_path / 'run'
+        home.mkdir()
     monkeypatch.setenv('XDG_RUNTIME_DIR', str(home))
-    return home
+    yield home
+    if sys.platform == 'darwin':
+        shutil.rmtree(home, ignore_errors=True)
 
 
 @pytest.fixture(name='database')
