@@ -4,7 +4,6 @@ import ctypes
 import hashlib
 import json
 import os
-import resource
 import socket
 import struct
 import sys
@@ -13,6 +12,9 @@ from collections import deque
 from pathlib import Path
 
 from .secret import hide, wipe
+
+if sys.platform != 'win32':
+    import resource
 
 VERSION = 1
 TIMEOUT = 10.0

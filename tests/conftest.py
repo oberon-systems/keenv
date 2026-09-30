@@ -1,5 +1,13 @@
+import sys
+
 import pytest
 from pykeepass import create_database
+
+# These drive sh, fork, pty and AF_UNIX, none of which Windows has.
+collect_ignore = [
+    'test_agent.py', 'test_cli.py', 'test_conf.py', 'test_unlock.py',
+    'test_vault.py',
+] if sys.platform == 'win32' else []
 
 ACCESS_KEY = 'r2-access-key-id'
 SECRET_KEY = 'r2-secret-access-key'

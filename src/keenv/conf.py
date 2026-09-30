@@ -1,6 +1,5 @@
 """keenv conf: a --config rendered out of KeePass into memory only."""
 
-import fcntl
 import os
 import re
 import sys
@@ -9,6 +8,9 @@ from typing import NamedTuple
 
 from .config import Binding, Settings
 from .uri import is_reference, parse
+
+if sys.platform != 'win32':
+    import fcntl
 
 # `# keenv: vault ~/oberon.kdbx` - a plain comment to the command itself.
 DIRECTIVE = re.compile(r'^\s*#\s*keenv:\s*(\S*)\s*(.*?)\s*$')

@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from time import sleep
 
-from . import agent, conf, paint
+from . import agent, conf, paint, windows
 from .config import (
     DEFAULT_CONFIG,
     DEFAULT_ENV,
@@ -31,6 +31,8 @@ from .vault import (
 USAGE_ERROR = 2
 NOT_FOUND = 127
 CANCELLED = 130
+
+WINDOWS = sys.platform == 'win32'
 
 # Long enough to read the line and still Ctrl-C out of an unwanted run.
 SKIP_PAUSE = 2
@@ -199,6 +201,9 @@ def _open(settings: Settings, spawning: bool) -> Vault:
     path, keyfile, ttl = settings
     if ttl is None:
         return Vault(path, keyfile)
+    if WINDOWS:
+        paint.warn('keenv: ttl does nothing on Windows, which has no agent')
+        return Vault(path, keyfile)
     if keyfile is not None:
         paint.warn(
             'keenv: ttl does nothing while a key file opens the database',
@@ -319,6 +324,45 @@ def _conf(template_path: Path, vault: Path | None, keyfile: Path | None,
     return 0
 
 
+def _windows(options: argparse.Namespace, given: list[str],
+             command: list[str]) -> int:
+    """run and check only: no agent, no conf, and no exec to lean on.
+
+    `run` is a waiter that never reads the config, and a resolver it starts
+    that opens the database, starts the command and exits before it does.
+    """
+    if not windows.console():
+        paint.disable()
+
+    if options.action == 'conf':
+        raise ValueError(
+            'keenv conf is not available on Windows: there is no way to '
+            'hand a config over in memory only',
+        )
+    if options.action == 'lock':
+        print(paint.good('keenv: no agents on Windows, nothing to drop',
+                         sys.stdout))
+        return 0
+
+    plan_arguments = (
+        options.config, options.env, options.vault, options.keyfile,
+    )
+    if options.action == 'check':
+        return _check(build(*plan_arguments))
+
+    if not command:
+        paint.error('keenv run needs a command: keenv run -- tofu plan')
+        return USAGE_ERROR
+    if windows.RESOLVER not in os.environ:
+        return windows.wait([*given, '--', *command])
+
+    environment = dict(os.environ)
+    resolver = environment.pop(windows.RESOLVER)
+    environment.update(_resolve(build(*plan_arguments), spawning=False))
+    windows.hand_over(command, environment, resolver)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns an exit code; `run` never returns at all."""
     given = list(sys.argv[1:] if argv is None else argv)
@@ -328,6 +372,9 @@ def main(argv: list[str] | None = None) -> int:
         paint.disable()
 
     try:
+        if WINDOWS:
+            return _windows(options, given, command)
+
         if options.action == 'conf':
             if not command:
                 paint.error(

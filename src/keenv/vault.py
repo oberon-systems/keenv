@@ -1,6 +1,7 @@
 """Opening the KeePass database and reading single fields out of it."""
 
 import getpass
+import sys
 from pathlib import Path
 
 from pykeepass import PyKeePass
@@ -16,6 +17,8 @@ LISTED = 3
 
 # How many times a PIN may be typed badly before keenv gives up on it.
 TRIES = 3
+
+WINDOWS = sys.platform == 'win32'
 
 # KeePass field name -> the attribute pykeepass exposes it under.
 PROPERTIES = {
@@ -41,6 +44,9 @@ def _hidden(prompt: str) -> str:
     Falling back to stdin would silently eat the first line of a pipe, so a
     session without a terminal is an error the caller has to fix.
     """
+    if WINDOWS:
+        # There getpass reads the console itself, never a redirected stdin.
+        return getpass.getpass(prompt)
     # 'w+' would need a seekable stream and a tty is not one; getpass
     # opens /dev/tty itself to read, so writing the prompt is enough.
     with open('/dev/tty', 'w', encoding='utf-8') as tty:
