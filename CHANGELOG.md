@@ -1,3 +1,10 @@
+## 0.4.2 (2026-09-30)
+
+### Bug Fixes
+
+- **conf**: reach the config through the /proc entry of sudo, not sudo -C
+- **conf**: hand the config over on fd 3 and keep stdin for prompts
+
 ## 0.4.1 (2026-09-30)
 
 ### Bug Fixes
