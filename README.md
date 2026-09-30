@@ -5,7 +5,8 @@ command and nowhere else: into its environment with `keenv run`, or into an
 in-memory config it reads through a pipe with `keenv conf`. The values never
 reach a file, an `export`, or the shell history: they exist between unlocking
 the database and `exec`ing the command, and the process that held them is
-replaced.
+replaced. Windows has no `exec`, and a short-lived process stands in for it
+there, as the [Windows](#windows) section shows.
 
 It is the tool the Oberon Systems keyring policy names for local secrets.
 
@@ -18,6 +19,7 @@ It is the tool the Oberon Systems keyring policy names for local secrets.
 - [Remembering the password](#remembering-the-password)
 - [Config files](#config-files)
 - [macOS](#macos)
+- [Windows](#windows)
 - [How it works](#how-it-works)
 - [Development](#development)
 
@@ -42,8 +44,54 @@ The database itself is read in process through
 [pykeepass](https://github.com/libkeepass/pykeepass), so KeePassXC does not
 have to be installed.
 
-`keenv` runs on Linux and macOS. The [macOS](#macos) section lists what is
-weaker there and how `keenv conf` works with `sudo`.
+`keenv` runs on Linux, macOS and Windows. The [macOS](#macos) section lists
+what is weaker there and how `keenv conf` works with `sudo`. On Windows it is
+a reduced client, described in the [Windows](#windows) section.
+
+### Installing on Windows
+
+`keenv` needs Python 3.10 or later. Install Python from
+[python.org](https://www.python.org/downloads/windows/) or with
+[winget](https://learn.microsoft.com/windows/package-manager/winget/), then
+install `keenv` with [pipx](https://pipx.pypa.io/), which keeps it in its own
+environment and puts it on `PATH`:
+
+```powershell
+winget install Python.Python.3.12
+py -m pip install --user pipx
+py -m pipx ensurepath
+py -m pipx install keenv
+```
+
+Open a new terminal after `ensurepath`, so that it reads the updated `PATH`.
+Plain pip works as well:
+
+```powershell
+py -m pip install keenv
+```
+
+Check the install:
+
+```powershell
+keenv --help
+```
+
+Expected output starts with:
+
+```text
+usage: keenv [-h] {run,check,lock,conf} ...
+```
+
+If `keenv` is not found, the Python `Scripts` directory is not on `PATH`.
+`py -m keenv` runs the same program without it:
+
+```powershell
+py -m keenv --help
+```
+
+For the agent and `keenv conf` on a Windows machine, install `keenv` inside
+[WSL](https://learn.microsoft.com/windows/wsl/) instead, where it is the Linux
+client with everything this README describes.
 
 ## Configuration
 
@@ -474,6 +522,114 @@ Whether a `~` in `# keenv: vault` means your home or root's depends on how
 `sudo` treats `HOME`, so name the database by its absolute path there or pass
 `--vault`.
 
+## Windows
+
+`keenv` on Windows is a reduced client: `run` and `check` work, `lock` has
+nothing to drop, and `conf` is refused. Every difference is a separate branch
+in the code, so nothing described for Linux or macOS changes. For the full
+client, run `keenv` inside WSL, as [Installing on
+Windows](#installing-on-windows) describes.
+
+### What differs on Windows
+
+- There is no agent. A `ttl` in `keenv.yaml` is ignored with a warning, so
+  every run asks for the master password, or opens the database with its key
+  file.
+- `keenv lock` has no agent to drop, says so and exits with `0`.
+- `keenv conf` is refused. Windows has no descriptor path a command can open
+  its config through, and a temporary file is exactly what `conf` exists to
+  avoid.
+- The master password is read from the console itself, never from standard
+  input, so a pipe into the command keeps its first line.
+- There is no `PR_SET_DUMPABLE` and no `mlockall`, so nothing closes `keenv`
+  to your other processes or keeps its pages out of the page file.
+- Colour needs a console that takes escape sequences, as Windows Terminal and
+  current Windows consoles do. Without one, `keenv` prints plain text.
+
+### How keenv run works on Windows
+
+Windows has no `exec`, so the process that opened the database cannot become
+the command. A process that started the command and waited for it would keep
+the whole decrypted database in its memory for as long as the command runs.
+`keenv run` is therefore split in two:
+
+```text
+keenv run -- app              waiter: never reads a config or a secret
+  +- python -m keenv run ...  resolver: prompt, database, values
+       +- app                 the command, with the values in its environment
+```
+
+1. The waiter starts the resolver on the same arguments and then ignores
+   Ctrl-C, which reaches the prompt or the command on the shared console.
+2. The resolver reads `keenv.yaml` and `.env`, opens the database, resolves
+   every reference and starts the command with the result.
+3. The resolver hands the waiter a handle on the command and exits. Windows
+   frees its memory, and the database and the values go with it.
+4. The waiter waits on that handle and exits with the command's exit code.
+
+A resolver that cannot hand the command over kills it and fails, rather than
+waiting on it and keeping the database in memory for the command's lifetime.
+
+### The limits on Windows, plainly
+
+- For the seconds the resolver lives, another process running as you can read
+  its memory, database included. Windows lets processes of one user open each
+  other, and has no equivalent of `PR_SET_DUMPABLE`.
+- The command holds the values in its environment for its whole life, as on
+  every system, and a process running as you can read that environment.
+- Without an agent there is no PIN. A key file saves typing the master
+  password, at the price of a file that opens the database on its own.
+
+### Examples on Windows
+
+The examples are for `cmd.exe`. `check`, `lock` and `run` take the same flags
+as on Linux:
+
+```bat
+keenv check
+keenv lock
+keenv run -- terraform plan
+keenv run --vault C:\Users\me\oberon.kdbx -e deploy.env -- deploy.cmd
+```
+
+The command's exit code comes back through the waiter:
+
+```bat
+keenv run -- cmd /c "exit 3"
+echo %ERRORLEVEL%
+```
+
+Expected output of the second line:
+
+```text
+3
+```
+
+`keenv lock` is expected to print:
+
+```text
+keenv: no agents on Windows, nothing to drop
+```
+
+A `ttl` in `keenv.yaml` is expected to print this before the password
+prompt:
+
+```text
+keenv: ttl does nothing on Windows, which has no agent
+```
+
+`keenv conf` is refused with exit code `1`:
+
+```bat
+keenv conf work.ovpn -- openvpn --config {}
+```
+
+Expected output:
+
+```text
+keenv: keenv conf is not available on Windows: there is no way to hand a config over in memory only
+```
+
 ## How it works
 
 1. Both layers are read and merged into one list of variables. A name defined
@@ -492,7 +648,9 @@ Whether a `~` in `# keenv: vault` means your home or root's depends on how
 
 Step 5 is what keeps the secrets contained: `execvpe` replaces the process
 image, so nothing that held the values is still running once the command
-starts, and the shell that invoked `keenv` never saw them.
+starts, and the shell that invoked `keenv` never saw them. Windows has no
+`execvpe`; the [Windows](#windows) section shows the two processes that stand
+in for it there.
 
 ## Development
 
