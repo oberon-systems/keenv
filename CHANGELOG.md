@@ -1,3 +1,21 @@
+## 0.4.0 (2026-09-30)
+
+### Features
+
+- **unlock**: let an empty new PIN run without the agent
+- **ovpn**: run sudo openvpn on a config rendered into memory only
+
+### Build
+
+- **deps**: Bump commitizen from 4.18.1 to 4.19.0 in the pip group
+- **deps**: Bump https://github.com/commitizen-tools/commitizen
+- **pre-commit**: pin markdownlint hook to node 24
+- **deps**: group dependabot updates and prefix their commits
+- **github**: let dependabot bump hook revs and actions
+- **publish**: add the release workflow
+- **deps**: keep commitizen, wyld-cz and the hook rev in step
+- **github**: create dependabot.yml
+
 ## 0.3.1 (2026-09-06)
 
 ### Bug Fixes
