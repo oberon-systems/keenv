@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from time import sleep
 
-from . import agent, ovpn, paint
+from . import agent, conf, paint
 from .config import (
     DEFAULT_CONFIG,
     DEFAULT_ENV,
@@ -78,11 +78,12 @@ def _parser() -> argparse.ArgumentParser:
         _database_flags(sub)
 
     sub = subparsers.add_parser(
-        'ovpn', help='run sudo openvpn on a config rendered into memory only',
+        'conf', help='run a command on a config rendered into memory only',
     )
     sub.add_argument(
         'template', type=Path,
-        help='.ovpn with whole-line keenv:// references',
+        help='config with whole-line keenv:// references; '
+             '{} marks it in the command',
     )
     _database_flags(sub)
 
@@ -296,10 +297,11 @@ def _check(plan: Plan) -> int:
     return 0
 
 
-def _ovpn(template_path: Path, vault: Path | None, keyfile: Path | None,
-          extra: list[str]) -> int:
-    """Render the .ovpn and become sudo openvpn, with no PIN and no agent."""
-    template = ovpn.load(template_path)
+def _conf(template_path: Path, vault: Path | None, keyfile: Path | None,
+          command: list[str]) -> int:
+    """Render the template and become the command, with no PIN."""
+    command = conf.place(command)
+    template = conf.load(template_path.expanduser())
     settings = overlay(template.settings, vault, keyfile)
     if settings.vault is None:
         raise ValueError(
@@ -308,9 +310,8 @@ def _ovpn(template_path: Path, vault: Path | None, keyfile: Path | None,
         )
 
     resolved = _resolve(Plan(settings, template.bindings, template.origins))
-    command = [*ovpn.LAUNCHER, *extra]
     try:
-        ovpn.launch(ovpn.render(template, resolved), command)
+        conf.launch(conf.render(template, resolved), command)
     except FileNotFoundError:
         paint.error(f'keenv: command not found: {command[0]}')
         return NOT_FOUND
@@ -326,8 +327,14 @@ def main(argv: list[str] | None = None) -> int:
         paint.disable()
 
     try:
-        if options.action == 'ovpn':
-            return _ovpn(
+        if options.action == 'conf':
+            if not command:
+                paint.error(
+                    'keenv conf needs a command: '
+                    'keenv conf work.ovpn -- sudo openvpn --config {}',
+                )
+                return USAGE_ERROR
+            return _conf(
                 options.template, options.vault, options.keyfile, command,
             )
 

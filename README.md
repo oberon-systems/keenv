@@ -2,7 +2,7 @@
 
 `keenv` puts secrets from a [KeePass](https://keepass.info/) database into one
 command and nowhere else: into its environment with `keenv run`, or into an
-in-memory config on its standard input with `keenv ovpn`. The values never
+in-memory config on its standard input with `keenv conf`. The values never
 reach a file, an `export`, or the shell history: they exist between unlocking
 the database and `exec`ing the command, and the process that held them is
 replaced.
@@ -16,7 +16,7 @@ It is the tool the Oberon Systems keyring policy names for local secrets.
 - [Configuration](#configuration)
 - [Usage](#usage)
 - [Remembering the password](#remembering-the-password)
-- [OpenVPN](#openvpn)
+- [Config files](#config-files)
 - [How it works](#how-it-works)
 - [Development](#development)
 
@@ -290,19 +290,27 @@ A key file is a different trade and needs none of this. It already opens the
 database without a prompt, so `ttl` does nothing alongside one, and `keenv`
 says so rather than starting an agent that would hold nothing.
 
-## OpenVPN
+## Config files
 
-`keenv ovpn` renders an OpenVPN config out of the database and runs
-`sudo openvpn` on it, without the rendered config ever becoming a file:
+`keenv conf` renders a config file out of the database and runs a command on
+the rendered copy, without that copy ever becoming a file. The command is
+given in full after `--`, as with `keenv run`, and `{}` marks where it takes
+the config:
 
 ```bash
-keenv ovpn ~/vpn/work.ovpn -- --verb 4
+keenv conf ~/vpn/work.ovpn -- sudo /usr/sbin/openvpn --config {} --verb 4
+keenv conf ~/app.toml -- myapp -c {}
+keenv conf ~/tool.yaml -- tool --config={}
 ```
 
-Anything after `--` goes to `openvpn`. The template is an ordinary `.ovpn`
-where a line holding nothing but a `keenv://` reference is replaced by the
-value of that field, which may span several lines. That fits the inline
-blocks OpenVPN 2.6 reads secrets from:
+`keenv` puts `/dev/stdin` in place of the `{}`, so any flag the command reads
+its config with will do. A command without a `{}`, or with more than one, is
+refused: the config reaches the command once, on its standard input.
+
+The template is the config as the command reads it, where a line holding
+nothing but a `keenv://` reference is replaced by the value of that field,
+which may span several lines. For [OpenVPN](https://openvpn.net/) that fits
+the inline blocks version 2.6 reads secrets from:
 
 ```text
 # keenv: vault ~/Dropbox/oberon.kdbx
@@ -323,20 +331,22 @@ may contain spaces and could not be told apart from the rest of the line.
 Nothing else in the template is expanded either, so a `$` stays a `$`.
 
 The template carries its own settings. `# keenv: vault` and `# keenv: keyfile`
-name the database and the key file, and are cut out of what OpenVPN gets.
+name the database and the key file, and are cut out of what the command gets.
 `keenv.yaml` and `.env` are not read. `KEENV_VAULT`, `KEENV_KEYFILE`,
 `--vault` and `--keyfile` override the template in the same order as they
 override `keenv.yaml`. Any other `# keenv:` directive is an error.
 
-There is no PIN and no agent here. A VPN is brought up once for a long
-session, so `keenv ovpn` asks for the master password, or opens the database
-with the key file, and remembers nothing. `# keenv: ttl` is refused.
+There is no PIN and no agent here. A command such as a VPN is brought up once
+for a long session, so `keenv conf` asks for the master password, or opens the
+database with the key file, and remembers nothing. `# keenv: ttl` is refused.
+The directives are `#` comments, so the format has to take `#` as a comment,
+as OpenVPN, YAML and TOML do.
 
 ### Where the config lives
 
 The rendered config goes into an anonymous in-memory file (`memfd_create`),
-sealed against any further change, which becomes the standard input of
-`sudo openvpn --config /dev/stdin`. Standard input is the only way in:
+sealed against any further change, which becomes the standard input of the
+command. Standard input is the only way through `sudo`:
 
 - `sudo` closes every descriptor above 2, so `/dev/fd/3` would arrive closed.
 - `sudo` resets the environment, and an environment is readable in
@@ -344,10 +354,10 @@ sealed against any further change, which becomes the standard input of
 - A temporary file, even on tmpfs, has a name that another process of yours
   can open.
 
-Once `sudo` has run, the only holder of the descriptor is an `openvpn` process
-owned by root, whose `/proc/<pid>/fd` your other processes cannot open.
-Password and challenge prompts from OpenVPN go to the terminal, not to
-standard input, so they still work.
+Once `sudo` has run, the only holder of the descriptor is the command, owned
+by root, whose `/proc/<pid>/fd` your other processes cannot open. Password and
+challenge prompts from OpenVPN go to the terminal, not to standard input, so
+they still work.
 
 Two limits, said outright:
 

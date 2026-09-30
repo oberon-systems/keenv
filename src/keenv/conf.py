@@ -1,4 +1,4 @@
-"""keenv ovpn: an OpenVPN config rendered out of KeePass into memory only."""
+"""keenv conf: a --config rendered out of KeePass into memory only."""
 
 import fcntl
 import os
@@ -9,7 +9,7 @@ from typing import NamedTuple
 from .config import Binding, Settings
 from .uri import is_reference, parse
 
-# `# keenv: vault ~/oberon.kdbx` - a plain comment to OpenVPN itself.
+# `# keenv: vault ~/oberon.kdbx` - a plain comment to the command itself.
 DIRECTIVE = re.compile(r'^\s*#\s*keenv:\s*(\S*)\s*(.*?)\s*$')
 
 DIRECTIVES = ('vault', 'keyfile')
@@ -21,17 +21,35 @@ SEALS = (
     | fcntl.F_SEAL_WRITE
 )
 
+# Where the command reads its config, as `find -exec` and `xargs` mark theirs.
+PLACEHOLDER = '{}'
+
 # sudo closes every descriptor above 2, so stdin is the one way through it.
-LAUNCHER = ('sudo', 'openvpn', '--config', '/dev/stdin')
+STDIN = '/dev/stdin'
 
 
 class Template(NamedTuple):
-    """A .ovpn: the database it names, its references and its lines."""
+    """A config: the database it names, its references and its lines."""
 
     settings: Settings
     bindings: dict[str, Binding]
     origins: dict[str, str]
     lines: list[str]
+
+
+def place(command: list[str]) -> list[str]:
+    """The command with its one {} pointing at stdin."""
+    count = sum(arg.count(PLACEHOLDER) for arg in command)
+    if count == 0:
+        raise ValueError(
+            f'the command needs {PLACEHOLDER} where the config goes: '
+            f'keenv conf work.ovpn -- sudo openvpn --config {PLACEHOLDER}',
+        )
+    if count > 1:
+        raise ValueError(
+            f'one {PLACEHOLDER} only: the config reaches the command once',
+        )
+    return [arg.replace(PLACEHOLDER, STDIN) for arg in command]
 
 
 def _key(number: int) -> str:
@@ -41,7 +59,7 @@ def _key(number: int) -> str:
 def _directive(match: re.Match[str]) -> tuple[str, Path]:
     name, value = match.group(1), match.group(2)
     if name == 'ttl':
-        raise ValueError('ttl: keenv ovpn never remembers the master password')
+        raise ValueError('ttl: keenv conf never remembers the master password')
     if name not in DIRECTIVES:
         raise ValueError(
             f'unknown keenv directive {name!r}; '
@@ -53,7 +71,7 @@ def _directive(match: re.Match[str]) -> tuple[str, Path]:
 
 
 def load(path: Path) -> Template:
-    """Read a .ovpn: `# keenv:` directives and whole-line references."""
+    """Read a config: `# keenv:` directives and whole-line references."""
     if not path.is_file():
         raise ValueError(f'template not found: {path}')
 
@@ -80,7 +98,7 @@ def load(path: Path) -> Template:
 
 
 def render(template: Template, resolved: dict[str, str]) -> bytes:
-    """The config OpenVPN gets: values in, directives out, the rest as is."""
+    """The config as rendered: values in, directives out, the rest as is."""
     out: list[str] = []
     for number, line in enumerate(template.lines, 1):
         key = _key(number)
@@ -93,7 +111,7 @@ def render(template: Template, resolved: dict[str, str]) -> bytes:
 
 def memfd(content: bytes) -> int:
     """An anonymous, sealed in-memory file holding `content`, read from 0."""
-    fd = os.memfd_create('keenv-ovpn', os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+    fd = os.memfd_create('keenv-conf', os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
     with open(fd, 'wb', closefd=False) as stream:
         stream.write(content)
     fcntl.fcntl(fd, fcntl.F_ADD_SEALS, SEALS)
