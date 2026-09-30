@@ -105,8 +105,8 @@ def test_a_config_larger_than_the_default_pipe_still_fits():
 
 def test_launch_reads_the_config_once_and_leaves_stdin_alone():
     script = (
-        'from keenv.conf import launch; '
-        "launch(b'client\\n', ['cat', '/dev/fd/3', '/dev/fd/3', '-'])"
+        'from keenv.conf import launch, place; '
+        "launch(b'client\\n', place(['sh', '-c', 'cat {} /dev/fd/3 -']))"
     )
     result = subprocess.run(
         [sys.executable, '-c', script],
@@ -116,12 +116,14 @@ def test_launch_reads_the_config_once_and_leaves_stdin_alone():
     assert result.stdout == 'client\nfrom stdin\n'
 
 
-@pytest.mark.parametrize(('command', 'placed'), [
-    (['openvpn', '--config', '{}'], ['openvpn', '--config', '/dev/fd/3']),
-    (['tool', '--config={}'], ['tool', '--config=/dev/fd/3']),
-])
-def test_place_points_the_placeholder_at_the_carrier(command, placed):
-    assert conf.place(command) == placed
+def test_place_points_the_placeholder_at_the_carrier():
+    carrier = f'/proc/{os.getpid()}/fd/3'
+    assert conf.place(['openvpn', '--config', '{}']) == [
+        'openvpn', '--config', carrier,
+    ]
+    assert conf.place(['tool', '--config={}']) == [
+        'tool', f'--config={carrier}',
+    ]
 
 
 @pytest.mark.parametrize(('command', 'message'), [
@@ -147,7 +149,7 @@ def test_conf_becomes_the_command_given(template, monkeypatch, hidden):
     ]) == 0
 
     assert launched['command'] == [
-        'sudo', '/usr/sbin/openvpn', '--config', conf.CARRIER_PATH,
+        'sudo', '/usr/sbin/openvpn', '--config', conf.carrier_path(),
         '--verb', '4',
     ]
     assert f'{ACCESS_KEY}\n{SECRET_KEY}\n' in launched['content']

@@ -299,13 +299,13 @@ given in full after `--`, as with `keenv run`, and `{}` marks where it takes
 the config:
 
 ```bash
-keenv conf ~/vpn/work.ovpn -- sudo -C 4 /usr/sbin/openvpn --config {} --auth-user-pass
+keenv conf ~/vpn/work.ovpn -- sudo /usr/sbin/openvpn --config {} --auth-user-pass
 keenv conf ~/app.toml -- myapp -c {}
 keenv conf ~/tool.yaml -- tool --config={}
 ```
 
-`keenv` puts `/dev/fd/3` in place of the `{}`, so any flag the command reads
-its config with will do. A command without a `{}`, or with more than one, is
+`keenv` puts `/proc/<pid>/fd/3` in place of the `{}`, so any flag the command
+reads its config with will do. A command without a `{}`, or with more than one, is
 refused: the config reaches the command once, on descriptor 3. Standard input,
 output and error stay the terminal, so the command can still ask for a
 password or a one-time code there.
@@ -348,9 +348,10 @@ as OpenVPN, YAML and TOML do.
 ### Where the config lives
 
 The rendered config is written into a pipe, whose write end `keenv` closes
-before it replaces itself with the command. The read end becomes descriptor 3
-of the command. Reading the config drains the pipe, so once the command has
-read it the config exists nowhere but in that command's memory.
+before it replaces itself with the command. The read end stays open as
+descriptor 3 of that process, whose pid `exec` leaves unchanged. Reading the
+config drains the pipe, so once the command has read it the config exists
+nowhere but in that command's memory.
 
 A pipe rather than a file, and descriptor 3 rather than anything else:
 
@@ -363,24 +364,18 @@ A pipe rather than a file, and descriptor 3 rather than anything else:
 
 ### Through sudo
 
-`sudo` closes every descriptor above 2 before it runs the command, so the
-pipe would arrive closed. `sudo -C 4` keeps descriptors up to 3 open, and
-`sudo` allows that only when the sudoers policy says so. Add this once, with
-`sudo visudo -f /etc/sudoers.d/keenv`:
+`sudo` closes every descriptor above 2 in the command it starts, but not its
+own, and `sudo` keeps running as the parent of that command. So the path is
+`/proc/<pid>/fd/3` rather than `/dev/fd/3`: it names descriptor 3 of the
+process `keenv` became, which is `sudo` itself, and the command, running as
+root, opens it there. Nothing in sudoers has to change, and `sudo -C` is not
+needed.
 
-```text
-Defaults closefrom_override
-```
-
-Without it `sudo` refuses `-C` outright and says so, rather than starting the
-command without its config. The setting lets you pass open descriptors to the
-commands you may run as root, and nothing more.
-
-The other way through is `sudo` in front of `keenv`, where no `sudo` stands
-between `keenv` and the command. That runs Python and every package in the
-virtualenv as root, and a virtualenv your user can write to is a way for any
-of your processes to become root, so prefer the sudoers line. Under `sudo`,
-`~` in a `# keenv:` directive also means root's home, not yours.
+This relies on `sudo` staying the parent of the command, which it does
+whenever it keeps a PAM session or a pseudo-terminal, as it does by default.
+A `sudo` that replaced itself with the command would have closed the
+descriptor, and the command then fails to open its config rather than
+starting without it.
 
 ### What reaches the config, and when
 

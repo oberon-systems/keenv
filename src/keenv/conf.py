@@ -19,7 +19,6 @@ PLACEHOLDER = '{}'
 
 # The first descriptor past stdio: stdin stays the terminal for prompts.
 CARRIER = 3
-CARRIER_PATH = f'/dev/fd/{CARRIER}'
 
 
 class Template(NamedTuple):
@@ -29,6 +28,15 @@ class Template(NamedTuple):
     bindings: dict[str, Binding]
     origins: dict[str, str]
     lines: list[str]
+
+
+def carrier_path() -> str:
+    """The carrier as seen through this pid, which exec hands on unchanged.
+
+    sudo closes descriptors above 2 in the command it starts but keeps its
+    own, so the command, running as root, still reaches the pipe this way.
+    """
+    return f'/proc/{os.getpid()}/fd/{CARRIER}'
 
 
 def place(command: list[str]) -> list[str]:
@@ -43,7 +51,8 @@ def place(command: list[str]) -> list[str]:
         raise ValueError(
             f'one {PLACEHOLDER} only: the config reaches the command once',
         )
-    return [arg.replace(PLACEHOLDER, CARRIER_PATH) for arg in command]
+    path = carrier_path()
+    return [arg.replace(PLACEHOLDER, path) for arg in command]
 
 
 def _key(number: int) -> str:
