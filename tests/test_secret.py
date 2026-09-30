@@ -79,6 +79,7 @@ def test_only_the_shortest_pin_counts_as_short():
     assert not is_short('12345')
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='prctl is Linux')
 def test_hide_closes_the_process_to_its_own_user():
     script = (
         'import ctypes; from keenv.secret import hide; hide(); '
