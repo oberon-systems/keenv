@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import agent, paint
+from . import agent, ovpn, paint
 from .config import (
     DEFAULT_CONFIG,
     DEFAULT_ENV,
@@ -13,6 +13,7 @@ from .config import (
     Plan,
     Settings,
     build,
+    overlay,
 )
 from .secret import seal, unseal, wipe
 from .uri import Reference
@@ -37,6 +38,21 @@ ACTIONS = (
 )
 
 
+def _database_flags(sub: argparse.ArgumentParser) -> None:
+    sub.add_argument(
+        '--vault', type=Path, default=None,
+        help='database, overriding the file that names one and KEENV_VAULT',
+    )
+    sub.add_argument(
+        '--keyfile', type=Path, default=None,
+        help='key file for the database',
+    )
+    sub.add_argument(
+        '--no-color', action='store_true',
+        help='print without colour, as a pipe or NO_COLOR already does',
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog='keenv',
@@ -55,18 +71,16 @@ def _parser() -> argparse.ArgumentParser:
             '-e', '--env', type=Path, default=DEFAULT_ENV,
             help=f'.env to read (default: {DEFAULT_ENV})',
         )
-        sub.add_argument(
-            '--vault', type=Path, default=None,
-            help='database, overriding keenv.yaml and KEENV_VAULT',
-        )
-        sub.add_argument(
-            '--keyfile', type=Path, default=None,
-            help='key file for the database',
-        )
-        sub.add_argument(
-            '--no-color', action='store_true',
-            help='print without colour, as a pipe or NO_COLOR already does',
-        )
+        _database_flags(sub)
+
+    sub = subparsers.add_parser(
+        'ovpn', help='run sudo openvpn on a config rendered into memory only',
+    )
+    sub.add_argument(
+        'template', type=Path,
+        help='.ovpn with whole-line keenv:// references',
+    )
+    _database_flags(sub)
 
     return parser
 
@@ -271,6 +285,27 @@ def _check(plan: Plan) -> int:
     return 0
 
 
+def _ovpn(template_path: Path, vault: Path | None, keyfile: Path | None,
+          extra: list[str]) -> int:
+    """Render the .ovpn and become sudo openvpn, with no PIN and no agent."""
+    template = ovpn.load(template_path)
+    settings = overlay(template.settings, vault, keyfile)
+    if settings.vault is None:
+        raise ValueError(
+            'no vault: name it with `# keenv: vault` in the template, '
+            'in KEENV_VAULT or with --vault',
+        )
+
+    resolved = _resolve(Plan(settings, template.bindings, template.origins))
+    command = [*ovpn.LAUNCHER, *extra]
+    try:
+        ovpn.launch(ovpn.render(template, resolved), command)
+    except FileNotFoundError:
+        paint.error(f'keenv: command not found: {command[0]}')
+        return NOT_FOUND
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns an exit code; `run` never returns at all."""
     given = list(sys.argv[1:] if argv is None else argv)
@@ -280,6 +315,11 @@ def main(argv: list[str] | None = None) -> int:
         paint.disable()
 
     try:
+        if options.action == 'ovpn':
+            return _ovpn(
+                options.template, options.vault, options.keyfile, command,
+            )
+
         plan = build(
             options.config, options.env, options.vault, options.keyfile,
         )

@@ -1,9 +1,11 @@
 # keenv
 
-`keenv` puts secrets from a [KeePass](https://keepass.info/) database into the
-environment of one command and nowhere else. The values never reach a file, an
-`export`, or the shell history: they exist between unlocking the database and
-`exec`ing the command, and the process that held them is replaced.
+`keenv` puts secrets from a [KeePass](https://keepass.info/) database into one
+command and nowhere else: into its environment with `keenv run`, or into an
+in-memory config on its standard input with `keenv ovpn`. The values never
+reach a file, an `export`, or the shell history: they exist between unlocking
+the database and `exec`ing the command, and the process that held them is
+replaced.
 
 It is the tool the Oberon Systems keyring policy names for local secrets.
 
@@ -14,6 +16,7 @@ It is the tool the Oberon Systems keyring policy names for local secrets.
 - [Configuration](#configuration)
 - [Usage](#usage)
 - [Remembering the password](#remembering-the-password)
+- [OpenVPN](#openvpn)
 - [How it works](#how-it-works)
 - [Development](#development)
 
@@ -281,6 +284,74 @@ Two things this does not protect against, said outright:
 A key file is a different trade and needs none of this. It already opens the
 database without a prompt, so `ttl` does nothing alongside one, and `keenv`
 says so rather than starting an agent that would hold nothing.
+
+## OpenVPN
+
+`keenv ovpn` renders an OpenVPN config out of the database and runs
+`sudo openvpn` on it, without the rendered config ever becoming a file:
+
+```bash
+keenv ovpn ~/vpn/work.ovpn -- --verb 4
+```
+
+Anything after `--` goes to `openvpn`. The template is an ordinary `.ovpn`
+where a line holding nothing but a `keenv://` reference is replaced by the
+value of that field, which may span several lines. That fits the inline
+blocks OpenVPN 2.6 reads secrets from:
+
+```text
+# keenv: vault ~/Dropbox/oberon.kdbx
+# keenv: keyfile ~/.keys/oberon.keyx
+client
+remote vpn.example.com 1194
+<key>
+keenv://Oberon/vpn/work/client-key
+</key>
+<auth-user-pass>
+keenv://Oberon/vpn/work/username
+keenv://Oberon/vpn/work/password
+</auth-user-pass>
+```
+
+A reference in the middle of a line is left as it is, because an entry path
+may contain spaces and could not be told apart from the rest of the line.
+Nothing else in the template is expanded either, so a `$` stays a `$`.
+
+The template carries its own settings. `# keenv: vault` and `# keenv: keyfile`
+name the database and the key file, and are cut out of what OpenVPN gets.
+`keenv.yaml` and `.env` are not read. `KEENV_VAULT`, `KEENV_KEYFILE`,
+`--vault` and `--keyfile` override the template in the same order as they
+override `keenv.yaml`. Any other `# keenv:` directive is an error.
+
+There is no PIN and no agent here. A VPN is brought up once for a long
+session, so `keenv ovpn` asks for the master password, or opens the database
+with the key file, and remembers nothing. `# keenv: ttl` is refused.
+
+### Where the config lives
+
+The rendered config goes into an anonymous in-memory file (`memfd_create`),
+sealed against any further change, which becomes the standard input of
+`sudo openvpn --config /dev/stdin`. Standard input is the only way in:
+
+- `sudo` closes every descriptor above 2, so `/dev/fd/3` would arrive closed.
+- `sudo` resets the environment, and an environment is readable in
+  `/proc/<pid>/environ` anyway.
+- A temporary file, even on tmpfs, has a name that another process of yours
+  can open.
+
+Once `sudo` has run, the only holder of the descriptor is an `openvpn` process
+owned by root, whose `/proc/<pid>/fd` your other processes cannot open.
+Password and challenge prompts from OpenVPN go to the terminal, not to
+standard input, so they still work.
+
+Two limits, said outright:
+
+- Pages of an in-memory file can be swapped out like any other memory.
+- Reopening `/dev/stdin` gives the memfd again from its start, so a `SIGHUP`
+  restart can read the config a second time. That holds only if `sudo` passes
+  standard input through as it is. With `use_pty` on, and it is the default
+  since sudo 1.9.14, `sudo` may relay it through a pipe of its own instead.
+  The config is then read once, and `SIGHUP` fails where `SIGUSR1` still works.
 
 ## How it works
 

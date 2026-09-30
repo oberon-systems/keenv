@@ -204,6 +204,23 @@ def load_env(path: Path) -> dict[str, Binding]:
     return bindings
 
 
+def overlay(
+    settings: Settings,
+    vault: Path | None = None,
+    keyfile: Path | None = None,
+) -> Settings:
+    """Lay the environment over a file's settings, and the flags over both."""
+    return Settings(
+        vault
+        or _expand(os.environ.get('KEENV_VAULT'))
+        or settings.vault,
+        keyfile
+        or _expand(os.environ.get('KEENV_KEYFILE'))
+        or settings.keyfile,
+        settings.ttl,
+    )
+
+
 def build(
     config_path: Path,
     env_path: Path,
@@ -219,13 +236,5 @@ def build(
     bindings.update(from_env)
     origins.update({name: str(env_path) for name in from_env})
 
-    settings = Settings(
-        vault
-        or _expand(os.environ.get('KEENV_VAULT'))
-        or plan.settings.vault,
-        keyfile
-        or _expand(os.environ.get('KEENV_KEYFILE'))
-        or plan.settings.keyfile,
-        plan.settings.ttl,
-    )
+    settings = overlay(plan.settings, vault, keyfile)
     return Plan(settings, bindings, origins)
