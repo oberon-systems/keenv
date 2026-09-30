@@ -91,6 +91,7 @@ def test_the_pipe_is_drained_by_one_read():
         os.close(fd)
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='F_SETPIPE_SZ')
 def test_a_config_larger_than_the_default_pipe_still_fits():
     content = b'x' * 200_000
     fd = conf.pipe(content)
@@ -124,6 +125,35 @@ def test_place_points_the_placeholder_at_the_carrier():
     assert conf.place(['tool', '--config={}']) == [
         'tool', f'--config={carrier}',
     ]
+
+
+def test_a_config_past_the_pipe_fails_on_macos_rather_than_hangs(
+        monkeypatch,
+):
+    monkeypatch.setattr(conf, 'MACOS', True)
+    with pytest.raises(ValueError, match='more than a pipe holds'):
+        conf.pipe(b'x' * 200_000)
+
+
+def test_on_macos_the_placeholder_points_at_dev_fd(monkeypatch):
+    monkeypatch.setattr(conf, 'MACOS', True)
+    assert conf.place(['openvpn', '--config', '{}']) == [
+        'openvpn', '--config', '/dev/fd/3',
+    ]
+
+
+@pytest.mark.parametrize('sudo', ['sudo', '/usr/bin/sudo'])
+def test_on_macos_sudo_inside_the_command_is_refused(monkeypatch, sudo):
+    monkeypatch.setattr(conf, 'MACOS', True)
+    with pytest.raises(ValueError, match='sudo keenv conf'):
+        conf.place([sudo, 'openvpn', '--config', '{}'])
+
+
+def test_on_linux_sudo_inside_the_command_is_placed(monkeypatch):
+    monkeypatch.setattr(conf, 'MACOS', False)
+    assert conf.place(['sudo', 'openvpn', '--config', '{}'])[-1] == (
+        f'/proc/{os.getpid()}/fd/3'
+    )
 
 
 @pytest.mark.parametrize(('command', 'message'), [

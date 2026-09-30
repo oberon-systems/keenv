@@ -3,6 +3,7 @@
 import fcntl
 import os
 import re
+import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -20,6 +21,8 @@ PLACEHOLDER = '{}'
 # The first descriptor past stdio: stdin stays the terminal for prompts.
 CARRIER = 3
 
+MACOS = sys.platform == 'darwin'
+
 
 class Template(NamedTuple):
     """A config: the database it names, its references and its lines."""
@@ -36,6 +39,8 @@ def carrier_path() -> str:
     sudo closes descriptors above 2 in the command it starts but keeps its
     own, so the command, running as root, still reaches the pipe this way.
     """
+    if MACOS:
+        return f'/dev/fd/{CARRIER}'
     return f'/proc/{os.getpid()}/fd/{CARRIER}'
 
 
@@ -50,6 +55,12 @@ def place(command: list[str]) -> list[str]:
     if count > 1:
         raise ValueError(
             f'one {PLACEHOLDER} only: the config reaches the command once',
+        )
+    if MACOS and Path(command[0]).name == 'sudo':
+        raise ValueError(
+            'on macOS sudo closes the descriptor the config is on; run '
+            'keenv itself under sudo: sudo keenv conf work.ovpn -- '
+            f'openvpn --config {PLACEHOLDER}',
         )
     path = carrier_path()
     return [arg.replace(PLACEHOLDER, path) for arg in command]
@@ -120,7 +131,10 @@ def pipe(content: bytes) -> int:
     """
     read_end, write_end = os.pipe()
     try:
-        if len(content) > fcntl.fcntl(write_end, fcntl.F_GETPIPE_SZ):
+        if MACOS:
+            # No F_SETPIPE_SZ: a config past the pipe fails rather than hangs.
+            os.set_blocking(write_end, False)
+        elif len(content) > fcntl.fcntl(write_end, fcntl.F_GETPIPE_SZ):
             fcntl.fcntl(write_end, fcntl.F_SETPIPE_SZ, len(content))
         view = memoryview(content)
         while view:
