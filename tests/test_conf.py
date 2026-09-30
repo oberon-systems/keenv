@@ -9,6 +9,14 @@ from keenv.cli import main
 from keenv.config import Settings
 
 
+@pytest.fixture(name='hidden', autouse=True)
+def hidden_fixture(monkeypatch):
+    """Record hide() rather than closing the test process to its user."""
+    calls = []
+    monkeypatch.setattr('keenv.cli.hide', lambda: calls.append(True))
+    return calls
+
+
 @pytest.fixture(name='template')
 def template_fixture(tmp_path, vault_path, keyfile, monkeypatch):
     monkeypatch.delenv('KEENV_VAULT', raising=False)
@@ -74,34 +82,45 @@ def test_a_template_without_references_is_an_error(tmp_path):
         conf.load(path)
 
 
-def test_memfd_is_sealed_and_rewound():
-    fd = conf.memfd(b'client\n')
+def test_the_pipe_is_drained_by_one_read():
+    fd = conf.pipe(b'client\n')
     try:
         assert os.read(fd, 100) == b'client\n'
-        with pytest.raises(PermissionError):
-            os.write(fd, b'more')
+        assert os.read(fd, 100) == b''
     finally:
         os.close(fd)
 
 
-def test_launch_hands_a_config_that_reads_twice():
+def test_a_config_larger_than_the_default_pipe_still_fits():
+    content = b'x' * 200_000
+    fd = conf.pipe(content)
+    try:
+        read = b''
+        while chunk := os.read(fd, 65536):
+            read += chunk
+        assert read == content
+    finally:
+        os.close(fd)
+
+
+def test_launch_reads_the_config_once_and_leaves_stdin_alone():
     script = (
         'from keenv.conf import launch; '
-        "launch(b'client\\n', ['sh', '-c', 'cat /dev/stdin /dev/stdin'])"
+        "launch(b'client\\n', ['cat', '/dev/fd/3', '/dev/fd/3', '-'])"
     )
     result = subprocess.run(
         [sys.executable, '-c', script],
-        capture_output=True, text=True, check=False,
+        input='from stdin\n', capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == 'client\nclient\n'
+    assert result.stdout == 'client\nfrom stdin\n'
 
 
 @pytest.mark.parametrize(('command', 'placed'), [
-    (['openvpn', '--config', '{}'], ['openvpn', '--config', conf.STDIN]),
-    (['tool', '--config={}'], ['tool', f'--config={conf.STDIN}']),
+    (['openvpn', '--config', '{}'], ['openvpn', '--config', '/dev/fd/3']),
+    (['tool', '--config={}'], ['tool', '--config=/dev/fd/3']),
 ])
-def test_place_points_the_placeholder_at_stdin(command, placed):
+def test_place_points_the_placeholder_at_the_carrier(command, placed):
     assert conf.place(command) == placed
 
 
@@ -114,7 +133,7 @@ def test_place_refuses_a_command_it_cannot_point(command, message):
         conf.place(command)
 
 
-def test_conf_becomes_the_command_given(template, monkeypatch):
+def test_conf_becomes_the_command_given(template, monkeypatch, hidden):
     launched = {}
 
     def fake_launch(content, command):
@@ -128,10 +147,12 @@ def test_conf_becomes_the_command_given(template, monkeypatch):
     ]) == 0
 
     assert launched['command'] == [
-        'sudo', '/usr/sbin/openvpn', '--config', conf.STDIN, '--verb', '4',
+        'sudo', '/usr/sbin/openvpn', '--config', conf.CARRIER_PATH,
+        '--verb', '4',
     ]
     assert f'{ACCESS_KEY}\n{SECRET_KEY}\n' in launched['content']
     assert 'keenv' not in launched['content']
+    assert hidden == [True]
 
 
 def test_the_vault_flag_beats_the_directive(

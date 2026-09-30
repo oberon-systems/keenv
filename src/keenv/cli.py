@@ -16,7 +16,7 @@ from .config import (
     build,
     overlay,
 )
-from .secret import seal, unseal, wipe
+from .secret import hide, seal, unseal, wipe
 from .uri import Reference
 from .vault import (
     TRIES,
@@ -300,6 +300,7 @@ def _check(plan: Plan) -> int:
 def _conf(template_path: Path, vault: Path | None, keyfile: Path | None,
           command: list[str]) -> int:
     """Render the template and become the command, with no PIN."""
+    hide()
     command = conf.place(command)
     template = conf.load(template_path.expanduser())
     settings = overlay(template.settings, vault, keyfile)
@@ -352,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
             paint.error('keenv run needs a command: keenv run -- tofu plan')
             return USAGE_ERROR
 
+        hide()
         environment = dict(os.environ)
         environment.update(_resolve(plan))
         os.execvpe(command[0], command, environment)

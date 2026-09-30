@@ -1,3 +1,6 @@
+import subprocess
+import sys
+
 import pytest
 
 from keenv.secret import (
@@ -74,3 +77,16 @@ def test_anything_else_is_refused(pin):
 def test_only_the_shortest_pin_counts_as_short():
     assert is_short('1234')
     assert not is_short('12345')
+
+
+def test_hide_closes_the_process_to_its_own_user():
+    script = (
+        'import ctypes; from keenv.secret import hide; hide(); '
+        'print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))'
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == '0'

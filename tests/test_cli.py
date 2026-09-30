@@ -163,3 +163,21 @@ def test_check_counts_on_stderr_so_the_table_stays_data(
 def test_no_color_is_accepted_by_every_action():
     for action in ('run', 'check', 'lock'):
         assert _parser().parse_args([action, '--no-color']).no_color
+
+
+def test_run_hides_itself_before_resolving(
+        config_file, keyfile, tmp_path, monkeypatch,
+):
+    order = []
+    monkeypatch.setattr('keenv.cli.hide', lambda: order.append('hide'))
+    monkeypatch.setattr(
+        'keenv.cli._resolve', lambda plan: order.append('resolve') or {},
+    )
+    monkeypatch.setattr(
+        'keenv.cli.os.execvpe', lambda *arguments: order.append('exec'),
+    )
+    assert main([
+        'run', '-c', str(config_file), '-e', str(tmp_path / '.env'),
+        '--keyfile', str(keyfile), '--', 'true',
+    ]) == 0
+    assert order == ['hide', 'resolve', 'exec']

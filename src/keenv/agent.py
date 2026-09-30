@@ -11,7 +11,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-from .secret import wipe
+from .secret import hide, wipe
 
 VERSION = 1
 TIMEOUT = 10.0
@@ -20,7 +20,6 @@ TIMEOUT = 10.0
 ATTEMPTS = 5
 WINDOW = 300
 
-PR_SET_DUMPABLE = 4
 MCL_CURRENT = 1
 MCL_FUTURE = 2
 
@@ -55,9 +54,9 @@ def _unlink(*targets: Path) -> None:
 def _harden() -> None:
     """Keep the blob out of core dumps, out of ptrace and out of swap."""
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    hide()
     try:
         libc = ctypes.CDLL(None, use_errno=True)
-        libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
         libc.mlockall(MCL_CURRENT | MCL_FUTURE)
     except (OSError, AttributeError):
         pass

@@ -1,9 +1,12 @@
 """The master password kept under a PIN, sealed and opened in one place."""
 
+import ctypes
 import os
 import re
 
 from argon2.low_level import Type, hash_secret_raw
+
+PR_SET_DUMPABLE = 4
 
 # Every blob is this long, so its size cannot betray the length of the
 # master password hiding in it.
@@ -33,6 +36,19 @@ def check_pin(pin: str) -> None:
 def is_short(pin: str) -> bool:
     """Whether the PIN is short enough to be worth warning about."""
     return len(pin) < SHORT
+
+
+def hide() -> None:
+    """Close this process to ptrace, /proc/<pid>/mem and /proc/<pid>/fd.
+
+    Only root reaches it afterwards. An exec of anything but a setuid
+    program such as sudo opens it again, so the command is left as it was.
+    """
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
+    except (OSError, AttributeError):
+        pass
 
 
 def wipe(*buffers: bytearray) -> None:

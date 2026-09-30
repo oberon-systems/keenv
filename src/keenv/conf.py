@@ -14,18 +14,12 @@ DIRECTIVE = re.compile(r'^\s*#\s*keenv:\s*(\S*)\s*(.*?)\s*$')
 
 DIRECTIVES = ('vault', 'keyfile')
 
-SEALS = (
-    fcntl.F_SEAL_SEAL
-    | fcntl.F_SEAL_SHRINK
-    | fcntl.F_SEAL_GROW
-    | fcntl.F_SEAL_WRITE
-)
-
 # Where the command reads its config, as `find -exec` and `xargs` mark theirs.
 PLACEHOLDER = '{}'
 
-# sudo closes every descriptor above 2, so stdin is the one way through it.
-STDIN = '/dev/stdin'
+# The first descriptor past stdio: stdin stays the terminal for prompts.
+CARRIER = 3
+CARRIER_PATH = f'/dev/fd/{CARRIER}'
 
 
 class Template(NamedTuple):
@@ -38,7 +32,7 @@ class Template(NamedTuple):
 
 
 def place(command: list[str]) -> list[str]:
-    """The command with its one {} pointing at stdin."""
+    """The command with its one {} pointing at the carrier descriptor."""
     count = sum(arg.count(PLACEHOLDER) for arg in command)
     if count == 0:
         raise ValueError(
@@ -49,7 +43,7 @@ def place(command: list[str]) -> list[str]:
         raise ValueError(
             f'one {PLACEHOLDER} only: the config reaches the command once',
         )
-    return [arg.replace(PLACEHOLDER, STDIN) for arg in command]
+    return [arg.replace(PLACEHOLDER, CARRIER_PATH) for arg in command]
 
 
 def _key(number: int) -> str:
@@ -109,19 +103,34 @@ def render(template: Template, resolved: dict[str, str]) -> bytes:
     return ('\n'.join(out) + '\n').encode('utf-8')
 
 
-def memfd(content: bytes) -> int:
-    """An anonymous, sealed in-memory file holding `content`, read from 0."""
-    fd = os.memfd_create('keenv-conf', os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
-    with open(fd, 'wb', closefd=False) as stream:
-        stream.write(content)
-    fcntl.fcntl(fd, fcntl.F_ADD_SEALS, SEALS)
-    os.lseek(fd, 0, os.SEEK_SET)
-    return fd
+def pipe(content: bytes) -> int:
+    """The read end of a pipe holding all of `content` and nothing more.
+
+    Its write end is closed, so one read drains it to end of file and the
+    config is left only in the memory of whoever read it.
+    """
+    read_end, write_end = os.pipe()
+    try:
+        if len(content) > fcntl.fcntl(write_end, fcntl.F_GETPIPE_SZ):
+            fcntl.fcntl(write_end, fcntl.F_SETPIPE_SZ, len(content))
+        view = memoryview(content)
+        while view:
+            view = view[os.write(write_end, view):]
+    except OSError as exc:
+        os.close(read_end)
+        raise ValueError(
+            f'the config is {len(content)} bytes, more than a pipe holds',
+        ) from exc
+    finally:
+        os.close(write_end)
+    return read_end
 
 
 def launch(content: bytes, command: list[str]) -> None:
-    """Put the config on stdin and become the command. Never returns."""
-    fd = memfd(content)
-    os.dup2(fd, 0)
-    os.close(fd)
+    """Put the config on the carrier and become the command. Never returns."""
+    fd = pipe(content)
+    if fd != CARRIER:
+        os.dup2(fd, CARRIER)
+        os.close(fd)
+    os.set_inheritable(CARRIER, True)
     os.execvpe(command[0], command, dict(os.environ))

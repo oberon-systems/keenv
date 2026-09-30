@@ -283,8 +283,9 @@ Two things this does not protect against, said outright:
   `.kdbx` can search for the PIN offline, at the price above. A database kept
   in a synced folder is well within reach of that.
 - The client necessarily holds the password in the clear for as long as it
-  takes to open the database. `execvpe` then replaces the process, which is
-  the same guarantee the default mode gives.
+  takes to open the database. It is closed to your other processes with
+  `PR_SET_DUMPABLE` meanwhile, and `execvpe` then replaces it, which is the
+  same guarantee the default mode gives.
 
 A key file is a different trade and needs none of this. It already opens the
 database without a prompt, so `ttl` does nothing alongside one, and `keenv`
@@ -298,14 +299,16 @@ given in full after `--`, as with `keenv run`, and `{}` marks where it takes
 the config:
 
 ```bash
-keenv conf ~/vpn/work.ovpn -- sudo /usr/sbin/openvpn --config {} --verb 4
+keenv conf ~/vpn/work.ovpn -- sudo -C 4 /usr/sbin/openvpn --config {} --auth-user-pass
 keenv conf ~/app.toml -- myapp -c {}
 keenv conf ~/tool.yaml -- tool --config={}
 ```
 
-`keenv` puts `/dev/stdin` in place of the `{}`, so any flag the command reads
+`keenv` puts `/dev/fd/3` in place of the `{}`, so any flag the command reads
 its config with will do. A command without a `{}`, or with more than one, is
-refused: the config reaches the command once, on its standard input.
+refused: the config reaches the command once, on descriptor 3. Standard input,
+output and error stay the terminal, so the command can still ask for a
+password or a one-time code there.
 
 The template is the config as the command reads it, where a line holding
 nothing but a `keenv://` reference is replaced by the value of that field,
@@ -344,44 +347,78 @@ as OpenVPN, YAML and TOML do.
 
 ### Where the config lives
 
-The rendered config goes into an anonymous in-memory file (`memfd_create`),
-sealed against any further change, which becomes the standard input of the
-command. Standard input is the only way through `sudo`:
+The rendered config is written into a pipe, whose write end `keenv` closes
+before it replaces itself with the command. The read end becomes descriptor 3
+of the command. Reading the config drains the pipe, so once the command has
+read it the config exists nowhere but in that command's memory.
 
-- `sudo` closes every descriptor above 2, so `/dev/fd/3` would arrive closed.
-- `sudo` resets the environment, and an environment is readable in
-  `/proc/<pid>/environ` anyway.
+A pipe rather than a file, and descriptor 3 rather than anything else:
+
 - A temporary file, even on tmpfs, has a name that another process of yours
-  can open.
+  can open, and outlives the command unless something deletes it.
+- The environment is readable in `/proc/<pid>/environ`, and `sudo` resets it.
+- Standard input has to stay the terminal. OpenVPN asks for passwords through
+  `systemd-ask-password`, which only uses the terminal when standard input is
+  one, and otherwise posts the question to a system-wide agent instead.
 
-Once `sudo` has run, the only holder of the descriptor is the command, owned
-by root, whose `/proc/<pid>/fd` your other processes cannot open. Password and
-challenge prompts from OpenVPN go to the terminal, not to standard input, so
-they still work.
+### Through sudo
+
+`sudo` closes every descriptor above 2 before it runs the command, so the
+pipe would arrive closed. `sudo -C 4` keeps descriptors up to 3 open, and
+`sudo` allows that only when the sudoers policy says so. Add this once, with
+`sudo visudo -f /etc/sudoers.d/keenv`:
+
+```text
+Defaults closefrom_override
+```
+
+Without it `sudo` refuses `-C` outright and says so, rather than starting the
+command without its config. The setting lets you pass open descriptors to the
+commands you may run as root, and nothing more.
+
+The other way through is `sudo` in front of `keenv`, where no `sudo` stands
+between `keenv` and the command. That runs Python and every package in the
+virtualenv as root, and a virtualenv your user can write to is a way for any
+of your processes to become root, so prefer the sudoers line. Under `sudo`,
+`~` in a `# keenv:` directive also means root's home, not yours.
+
+### What reaches the config, and when
+
+Nothing is left for a process of your own to read at any point:
+
+- `keenv conf` and `keenv run` close themselves to your other processes with
+  `PR_SET_DUMPABLE` before they ask for the master password. From then on only
+  root can read their memory or open their `/proc/<pid>/fd`.
+- `sudo` is setuid, so the process stays closed through the `exec` and while
+  `sudo` asks for its own password.
+- The command reads the pipe as soon as it starts. Anyone reading it first
+  drains it, and the command then fails on an empty config rather than coming
+  up quietly with a stolen one.
 
 Two limits, said outright:
 
-- Pages of an in-memory file can be swapped out like any other memory.
-- Reopening `/dev/stdin` gives the memfd again from its start, so a `SIGHUP`
-  restart can read the config a second time. That holds only if `sudo` passes
-  standard input through as it is. With `use_pty` on, and it is the default
-  since sudo 1.9.14, `sudo` may relay it through a pipe of its own instead.
-  The config is then read once, and `SIGHUP` fails where `SIGUSR1` still works.
+- Root can read the config out of the command's memory at any time, as it can
+  read anything.
+- The config is read once. OpenVPN rereads its config on `SIGHUP` and finds
+  the pipe empty, so restart it with `SIGUSR1`, which keeps the config it has.
 
 ## How it works
 
 1. Both layers are read and merged into one list of variables. A name defined
    in both takes its value from `.env`, and `keenv check` names the file each
    variable came from.
-2. If any of them is a `keenv://` reference, the database is opened once. The
-   master password is asked for on `/dev/tty`, never on stdin, so a password
-   prompt can never swallow the first line of a pipe. A key file replaces the
-   prompt, and `ttl:` replaces it with a PIN for as long as the agent lives.
-3. Every reference is resolved from that one open database.
-4. The resolved variables are laid over a copy of the current environment and
+2. `keenv` clears `PR_SET_DUMPABLE`, so from here on only root can read its
+   memory or its descriptors.
+3. If any of the variables is a `keenv://` reference, the database is opened
+   once. The master password is asked for on `/dev/tty`, never on stdin, so a
+   password prompt can never swallow the first line of a pipe. A key file
+   replaces the prompt, and `ttl:` replaces it with a PIN for as long as the
+   agent lives.
+4. Every reference is resolved from that one open database.
+5. The resolved variables are laid over a copy of the current environment and
    handed to `os.execvpe`.
 
-Step 4 is what keeps the secrets contained: `execvpe` replaces the process
+Step 5 is what keeps the secrets contained: `execvpe` replaces the process
 image, so nothing that held the values is still running once the command
 starts, and the shell that invoked `keenv` never saw them.
 
