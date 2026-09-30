@@ -2,7 +2,7 @@
 
 `keenv` puts secrets from a [KeePass](https://keepass.info/) database into one
 command and nowhere else: into its environment with `keenv run`, or into an
-in-memory config on its standard input with `keenv conf`. The values never
+in-memory config it reads through a pipe with `keenv conf`. The values never
 reach a file, an `export`, or the shell history: they exist between unlocking
 the database and `exec`ing the command, and the process that held them is
 replaced.
@@ -17,6 +17,7 @@ It is the tool the Oberon Systems keyring policy names for local secrets.
 - [Usage](#usage)
 - [Remembering the password](#remembering-the-password)
 - [Config files](#config-files)
+- [macOS](#macos)
 - [How it works](#how-it-works)
 - [Development](#development)
 
@@ -40,6 +41,9 @@ pip install keenv
 The database itself is read in process through
 [pykeepass](https://github.com/libkeepass/pykeepass), so KeePassXC does not
 have to be installed.
+
+`keenv` runs on Linux and macOS. The [macOS](#macos) section lists what is
+weaker there and how `keenv conf` works with `sudo`.
 
 ## Configuration
 
@@ -255,6 +259,9 @@ project pointing at it. That directory is a tmpfs owned by you, so nothing
 survives a reboot, and nothing cryptographic is written there in any case: the
 lock file holds a pid, a socket path and a version.
 
+macOS has neither `PR_SET_DUMPABLE` nor a runtime tmpfs. The
+[macOS](#macos) section says what the agent does there instead.
+
 ### The limits, plainly
 
 `ttl` takes `30s`, `5m` or a bare count of seconds, and must be more than zero
@@ -397,13 +404,83 @@ Two limits, said outright:
 - The config is read once. OpenVPN rereads its config on `SIGHUP` and finds
   the pipe empty, so restart it with `SIGUSR1`, which keeps the config it has.
 
+## macOS
+
+`keenv` runs on macOS as well as on Linux. Every difference is a separate
+branch in the code, so nothing described above changes on Linux. What differs
+on macOS:
+
+- There is no `PR_SET_DUMPABLE`. `keenv` and its agent run open to your other
+  processes, as far as the system's own debugging restrictions allow, so
+  another process of yours may be able to read their memory.
+- There is no `mlockall`, so nothing keeps the agent's pages out of swap. The
+  swap on macOS is encrypted.
+- Without `XDG_RUNTIME_DIR` the agent keeps its socket and lock file in
+  `$TMPDIR/keenv/`. That directory is private to you but is not a tmpfs, and
+  the agent's TTL, not a logout, is what clears it.
+- `keenv conf` puts `/dev/fd/3` in place of the `{}`, since there is no
+  `/proc`.
+
+### Examples on macOS
+
+Everything except `sudo` inside the `keenv conf` command works as on Linux:
+
+```bash
+keenv run -- tofu plan
+keenv check
+keenv lock
+keenv conf ~/app.toml -- myapp -c {}
+keenv conf ~/tool.yaml -- tool --config={}
+```
+
+With `ttl` set in `keenv.yaml` and no `XDG_RUNTIME_DIR`, the agent shows up
+in `$TMPDIR` after the first run:
+
+```bash
+ls "$TMPDIR/keenv"
+```
+
+Expected output, one pair per database:
+
+```text
+<hash>.lock  <hash>.sock
+```
+
+### keenv conf with sudo on macOS
+
+`/dev/fd/3` names descriptor 3 of the process that opens it, and `sudo` closes
+that descriptor in the command it starts. A command that begins with `sudo` is
+therefore refused on macOS, before the database is opened:
+
+```bash
+keenv conf ~/vpn/work.ovpn -- sudo openvpn --config {}
+```
+
+Expected output, with exit code 1:
+
+```text
+keenv: on macOS sudo closes the descriptor the config is on; run keenv itself under sudo: sudo keenv conf work.ovpn -- openvpn --config {}
+```
+
+Run `keenv` itself under `sudo` instead:
+
+```bash
+sudo keenv conf ~/vpn/work.ovpn -- openvpn --config {}
+sudo keenv conf --vault /Users/me/Dropbox/oberon.kdbx ~/vpn/work.ovpn -- openvpn --config {}
+```
+
+`keenv` then runs as root, and the master password prompt is the same.
+Whether a `~` in `# keenv: vault` means your home or root's depends on how
+`sudo` treats `HOME`, so name the database by its absolute path there or pass
+`--vault`.
+
 ## How it works
 
 1. Both layers are read and merged into one list of variables. A name defined
    in both takes its value from `.env`, and `keenv check` names the file each
    variable came from.
 2. `keenv` clears `PR_SET_DUMPABLE`, so from here on only root can read its
-   memory or its descriptors.
+   memory or its descriptors. This step is Linux only, see [macOS](#macos).
 3. If any of the variables is a `keenv://` reference, the database is opened
    once. The master password is asked for on `/dev/tty`, never on stdin, so a
    password prompt can never swallow the first line of a pipe. A key file
