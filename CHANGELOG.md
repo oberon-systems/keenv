@@ -1,3 +1,13 @@
+## 0.4.1 (2026-09-30)
+
+### Bug Fixes
+
+- **conf**: take the command in full and mark its config with {}
+
+### Build
+
+- **deps**: Bump https://github.com/PyCQA/flake8
+
 ## 0.4.0 (2026-09-30)
 
 ### Features
