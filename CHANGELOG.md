@@ -1,3 +1,27 @@
+## 0.5.0 (2026-10-02)
+
+### Features
+
+- **config**: read several .env files, from -e or env_files
+- **windows**: add a reduced Windows client for run and check
+- **conf**: hand the config over on macOS
+- **agent**: run the agent on macOS
+
+### Bug Fixes
+
+- **secret**: run the prctl test on Linux only
+
+### Build
+
+- **pyproject**: list Windows as a supported system
+- **pyproject**: list Linux and macOS as supported systems
+
+### Documentation
+
+- **readme**: describe several .env files and env_files
+- **readme**: describe the Windows client and its install
+- **readme**: describe macOS support and its limits
+
 ## 0.4.2 (2026-09-30)
 
 ### Bug Fixes
