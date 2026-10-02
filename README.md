@@ -148,8 +148,9 @@ LITERAL='no ${expansion} here'
 PRICE="100\$"
 ```
 
-A name is looked up in the environment `keenv` was called in, and in the lines
-above it in the same file, which is why `${PROJECT}` works there. It expands
+A name is looked up in the environment `keenv` was called in, in the `.env`
+files read before this one, and in the lines above it in the same file, which
+is why `${PROJECT}` works there. It expands
 inside a `keenv://` reference as well, so one file can serve several
 environments. Single quotes expand nothing and `\$` is a dollar of its own.
 
@@ -161,12 +162,26 @@ A value read out of the database is never substituted into another value:
 `${NAME}` naming a `keenv://` variable is an error, not a secret quietly
 copied somewhere it was not asked for.
 
+More than one `.env` can be read. Repeat `-e`, or list the files under
+`env_files:` in `keenv.yaml`:
+
+```yaml
+env_files:
+  - .env
+  - secrets.env
+```
+
+The files are read in the order given, and a later one overrides an earlier
+one. `-e` replaces the list in `keenv.yaml` and does not add to it, and
+either one replaces the default `./.env`. A path under `env_files:` may start
+with `~` and is otherwise relative to the directory `keenv` is called in.
+
 The layers apply in this order, each one overriding the last:
 
 | Layer | Set by |
 | :--- | :--- |
 | `keenv.yaml` | `-c`, default `./keenv.yaml` |
-| `.env` | `-e`, default `./.env` |
+| `.env` | `env_files:`, then `-e`, default `./.env` |
 | the database path | `vault:`, then `KEENV_VAULT`, then `--vault` |
 | the key file path | `keyfile:`, then `KEENV_KEYFILE`, then `--keyfile` |
 
@@ -209,10 +224,10 @@ way to see that a `.env` is overriding `keenv.yaml`. The table goes to stdout
 and the count that closes it to stderr, so `keenv check > list` writes the
 table and nothing else.
 
-Point at another database and another mapping:
+Point at another database and other mappings:
 
 ```bash
-keenv run --vault ~/other.kdbx -e deploy.env -- ./deploy.sh
+keenv run --vault ~/other.kdbx -e deploy.env -e secrets.env -- ./deploy.sh
 ```
 
 Exit codes are `0` on success, `1` for anything `keenv` can explain, `2` for a
