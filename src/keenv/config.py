@@ -80,12 +80,18 @@ class ConfigFile(BaseModel):
     vault: Path | None = None
     keyfile: Path | None = None
     ttl: int | None = None
+    env_files: list[Path] = []
     env: dict[str, EntrySpec] = {}
 
     @field_validator('vault', 'keyfile')
     @classmethod
     def _expand(cls, value: Path | None) -> Path | None:
         return value.expanduser() if value else None
+
+    @field_validator('env_files')
+    @classmethod
+    def _expand_each(cls, value: list[Path]) -> list[Path]:
+        return [path.expanduser() for path in value]
 
     @field_validator('ttl', mode='before')
     @classmethod
@@ -107,6 +113,7 @@ class Plan(NamedTuple):
     settings: Settings
     bindings: dict[str, Binding]
     origins: dict[str, str]
+    env_files: tuple[Path, ...] = ()
 
 
 def _expand(value: str | None) -> Path | None:
@@ -175,14 +182,21 @@ def load_config(path: Path) -> Plan:
     }
     origins = {name: str(path) for name in bindings}
     settings = Settings(config.vault, config.keyfile, config.ttl)
-    return Plan(settings, bindings, origins)
+    return Plan(settings, bindings, origins, tuple(config.env_files))
 
 
-def load_env(path: Path) -> dict[str, Binding]:
-    """Read a .env: ${NAME} expands, keenv:// resolves, the rest is literal."""
+def load_env(
+    path: Path,
+    known: dict[str, Binding] | None = None,
+) -> dict[str, Binding]:
+    """Read a .env: ${NAME} expands, keenv:// resolves, the rest is literal.
+
+    `known` is what the files read before this one hold, for ${NAME} to see.
+    """
     if not path.is_file():
         return {}
 
+    known = known or {}
     bindings: dict[str, Binding] = {}
     text = path.read_text(encoding='utf-8')
     for number, line in enumerate(text.splitlines(), 1):
@@ -196,7 +210,7 @@ def load_env(path: Path) -> dict[str, Binding]:
         name, (value, quote) = match.group(1), _unquote(match.group(2))
         try:
             if quote != "'":
-                value = expand(value, {**os.environ, **bindings})
+                value = expand(value, {**os.environ, **known, **bindings})
             bindings[name] = parse(value) if is_reference(value) else value
         except ValueError as exc:
             raise ValueError(f'{path}:{number}: {exc}') from exc
@@ -223,18 +237,25 @@ def overlay(
 
 def build(
     config_path: Path,
-    env_path: Path,
+    env_paths: list[Path] | None = None,
     vault: Path | None = None,
     keyfile: Path | None = None,
 ) -> Plan:
-    """Merge both layers. .env beats keenv.yaml, the flags beat both."""
+    """Merge the layers. A .env beats keenv.yaml, the flags beat both.
+
+    The paths given beat `env_files`, which beats ./.env; of several files
+    the later one wins.
+    """
     plan = load_config(config_path)
     bindings = dict(plan.bindings)
     origins = dict(plan.origins)
 
-    from_env = load_env(env_path)
+    from_env: dict[str, Binding] = {}
+    for path in env_paths or plan.env_files or (DEFAULT_ENV,):
+        layer = load_env(path, from_env)
+        from_env.update(layer)
+        origins.update({name: str(path) for name in layer})
     bindings.update(from_env)
-    origins.update({name: str(env_path) for name in from_env})
 
     settings = overlay(plan.settings, vault, keyfile)
-    return Plan(settings, bindings, origins)
+    return Plan(settings, bindings, origins, plan.env_files)

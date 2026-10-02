@@ -198,7 +198,7 @@ def test_env_overrides_the_config(tmp_path):
     ]))
     env = write(tmp_path / '.env', 'SHARED=literal-wins\nONLY_IN_ENV=x\n')
 
-    plan = build(config, env)
+    plan = build(config, [env])
     assert plan.bindings['SHARED'] == 'literal-wins'
     assert plan.bindings['ONLY_IN_CONFIG'] == Reference(
         ('Oberon', 'B'), 'Password',
@@ -208,14 +208,16 @@ def test_env_overrides_the_config(tmp_path):
 
 def test_the_vault_flag_beats_the_config(tmp_path):
     config = write(tmp_path / 'keenv.yaml', 'vault: /from-config.kdbx\n')
-    plan = build(config, tmp_path / '.env', vault=tmp_path / 'from-flag.kdbx')
+    plan = build(
+        config, [tmp_path / '.env'], vault=tmp_path / 'from-flag.kdbx',
+    )
     assert plan.settings.vault == tmp_path / 'from-flag.kdbx'
 
 
 def test_keenv_vault_beats_the_config(tmp_path, monkeypatch):
     monkeypatch.setenv('KEENV_VAULT', '/from-environment.kdbx')
     config = write(tmp_path / 'keenv.yaml', 'vault: /from-config.kdbx\n')
-    plan = build(config, tmp_path / '.env')
+    plan = build(config, [tmp_path / '.env'])
     assert str(plan.settings.vault) == '/from-environment.kdbx'
 
 
@@ -231,11 +233,98 @@ def test_build_records_the_file_each_variable_came_from(tmp_path):
     ]))
     env = write(tmp_path / '.env', 'SHARED=literal-wins\nONLY_IN_ENV=x\n')
 
-    assert build(config, env).origins == {
+    assert build(config, [env]).origins == {
         'SHARED': str(env),
         'ONLY_IN_CONFIG': str(config),
         'ONLY_IN_ENV': str(env),
     }
+
+
+def test_of_several_env_files_the_later_one_wins(tmp_path):
+    first = write(tmp_path / 'a.env', 'SHARED=first\nONLY_IN_FIRST=a\n')
+    second = write(tmp_path / 'b.env', 'SHARED=second\nONLY_IN_SECOND=b\n')
+
+    plan = build(tmp_path / 'keenv.yaml', [first, second])
+    assert plan.bindings == {
+        'SHARED': 'second',
+        'ONLY_IN_FIRST': 'a',
+        'ONLY_IN_SECOND': 'b',
+    }
+    assert plan.origins == {
+        'SHARED': str(second),
+        'ONLY_IN_FIRST': str(first),
+        'ONLY_IN_SECOND': str(second),
+    }
+
+
+def test_a_later_env_file_expands_a_literal_of_an_earlier_one(tmp_path):
+    first = write(tmp_path / 'a.env', 'PROJECT=balor\n')
+    second = write(tmp_path / 'b.env', 'CLUSTER="${PROJECT}-eu"\n')
+
+    plan = build(tmp_path / 'keenv.yaml', [first, second])
+    assert plan.bindings['CLUSTER'] == 'balor-eu'
+
+
+def test_a_later_env_file_cannot_expand_a_secret_of_an_earlier_one(tmp_path):
+    first = write(tmp_path / 'a.env', 'KEY=keenv://Oberon/A/password\n')
+    second = write(tmp_path / 'b.env', 'LEAK="${KEY}"\n')
+
+    with pytest.raises(ValueError, match='b.env:1:.*never'):
+        build(tmp_path / 'keenv.yaml', [first, second])
+
+
+def test_env_files_are_read_in_the_order_the_config_lists_them(tmp_path):
+    first = write(tmp_path / 'a.env', 'SHARED=first\nONLY_IN_FIRST=a\n')
+    second = write(tmp_path / 'b.env', 'SHARED=second\n')
+    config = write(tmp_path / 'keenv.yaml', '\n'.join([
+        'env_files:',
+        f'  - {first}',
+        f'  - {second}',
+    ]))
+
+    plan = build(config)
+    assert plan.bindings == {'SHARED': 'second', 'ONLY_IN_FIRST': 'a'}
+    assert plan.origins['SHARED'] == str(second)
+
+
+def test_env_files_expand_the_home_directory(tmp_path):
+    config = write(tmp_path / 'keenv.yaml', 'env_files:\n  - ~/deploy.env\n')
+
+    (path,) = load_config(config).env_files
+    assert path.name == 'deploy.env'
+    assert path.is_absolute()
+
+
+def test_env_files_that_are_not_a_list_are_rejected(tmp_path):
+    config = write(tmp_path / 'keenv.yaml', 'env_files: deploy.env\n')
+    with pytest.raises(ValueError, match='env_files'):
+        load_config(config)
+
+
+def test_the_env_flag_beats_env_files(tmp_path):
+    listed = write(tmp_path / 'listed.env', 'FROM=config\nONLY_LISTED=x\n')
+    given = write(tmp_path / 'given.env', 'FROM=flag\n')
+    config = write(tmp_path / 'keenv.yaml', f'env_files:\n  - {listed}\n')
+
+    assert build(config, [given]).bindings == {'FROM': 'flag'}
+
+
+def test_env_files_replace_the_default_dotenv(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    write(tmp_path / '.env', 'FROM=default\n')
+    listed = write(tmp_path / 'listed.env', 'ONLY_LISTED=x\n')
+    config = write(tmp_path / 'keenv.yaml', f'env_files:\n  - {listed}\n')
+
+    assert build(config).bindings == {'ONLY_LISTED': 'x'}
+
+
+def test_no_env_file_named_anywhere_reads_the_default_dotenv(
+        tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    write(tmp_path / '.env', 'FROM=default\n')
+
+    assert build(tmp_path / 'keenv.yaml').bindings == {'FROM': 'default'}
 
 
 def test_a_ttl_in_minutes_is_read(tmp_path):
@@ -278,5 +367,5 @@ def test_a_zero_ttl_is_an_error(tmp_path):
 
 def test_the_ttl_survives_the_merge(tmp_path):
     config = write(tmp_path / 'keenv.yaml', 'ttl: 5m\nvault: /a.kdbx\n')
-    plan = build(config, tmp_path / '.env', vault=tmp_path / 'b.kdbx')
+    plan = build(config, [tmp_path / '.env'], vault=tmp_path / 'b.kdbx')
     assert plan.settings.ttl == 300

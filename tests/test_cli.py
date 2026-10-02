@@ -46,6 +46,42 @@ def test_run_resolves_a_reference_from_a_dotenv(vault_path, keyfile, tmp_path):
     assert result.stdout == 'a-custom-attribute INFO'
 
 
+def test_run_reads_every_env_file_given(vault_path, keyfile, tmp_path):
+    first = tmp_path / 'a.env'
+    first.write_text(
+        'TOKEN=keenv://Oberon/R2/indech-state/api-token\nTF_LOG=INFO\n',
+        encoding='utf-8',
+    )
+    second = tmp_path / 'b.env'
+    second.write_text('TF_LOG=DEBUG\n', encoding='utf-8')
+    result = keenv(
+        'run', '-c', str(tmp_path / 'absent.yaml'),
+        '-e', str(first), '-e', str(second),
+        '--vault', str(vault_path), '--keyfile', str(keyfile),
+        '--', 'sh', '-c', 'printf "%s %s" "$TOKEN" "$TF_LOG"',
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'a-custom-attribute DEBUG'
+
+
+def test_run_reads_the_env_files_the_config_lists(
+        vault_path, keyfile, tmp_path,
+):
+    env_file = tmp_path / 'deploy.env'
+    env_file.write_text(
+        'TOKEN=keenv://Oberon/R2/indech-state/api-token\n', encoding='utf-8',
+    )
+    config = tmp_path / 'keenv.yaml'
+    config.write_text(f'env_files:\n  - {env_file}\n', encoding='utf-8')
+    result = keenv(
+        'run', '-c', str(config),
+        '--vault', str(vault_path), '--keyfile', str(keyfile),
+        '--', 'sh', '-c', 'printf %s "$TOKEN"',
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'a-custom-attribute'
+
+
 def test_check_never_prints_a_value(config_file, keyfile, tmp_path):
     result = keenv(
         'check', '-c', str(config_file), '-e', str(tmp_path / '.env'),

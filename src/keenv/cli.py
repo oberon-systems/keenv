@@ -74,8 +74,9 @@ def _parser() -> argparse.ArgumentParser:
             help=f'keenv.yaml to read (default: {DEFAULT_CONFIG})',
         )
         sub.add_argument(
-            '-e', '--env', type=Path, default=DEFAULT_ENV,
-            help=f'.env to read (default: {DEFAULT_ENV})',
+            '-e', '--env', type=Path, action='append', default=None,
+            help='.env to read, repeatable, the later file winning '
+                 f'(default: env_files in keenv.yaml, then {DEFAULT_ENV})',
         )
         _database_flags(sub)
 
