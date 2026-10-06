@@ -1,3 +1,14 @@
+## 0.6.0 (2026-10-06)
+
+### Features
+
+- **vault**: ask for the PIN with a counter, a timeout and the vault below
+- **config**: default ttl to 0 and read keenv directives from .env
+
+### Documentation
+
+- **readme**: describe ttl 0, .env directives and the new PIN prompts
+
 ## 0.5.0 (2026-10-02)
 
 ### Features
