@@ -4,16 +4,13 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
-from .config import Binding, Settings
+from .config import DIRECTIVE, Binding, Settings, directive
 from .uri import is_reference, parse
 
 if sys.platform != 'win32':
     import fcntl
-
-# `# keenv: vault ~/oberon.kdbx` - a plain comment to the command itself.
-DIRECTIVE = re.compile(r'^\s*#\s*keenv:\s*(\S*)\s*(.*?)\s*$')
 
 DIRECTIVES = ('vault', 'keyfile')
 
@@ -73,17 +70,10 @@ def _key(number: int) -> str:
 
 
 def _directive(match: re.Match[str]) -> tuple[str, Path]:
-    name, value = match.group(1), match.group(2)
-    if name == 'ttl':
+    if match.group(1) == 'ttl':
         raise ValueError('ttl: keenv conf never remembers the master password')
-    if name not in DIRECTIVES:
-        raise ValueError(
-            f'unknown keenv directive {name!r}; '
-            f'only {" and ".join(DIRECTIVES)} are known',
-        )
-    if not value:
-        raise ValueError(f'keenv directive {name} needs a path')
-    return name, Path(value).expanduser()
+    name, value = directive(match, DIRECTIVES)
+    return name, cast(Path, value)
 
 
 def load(path: Path) -> Template:

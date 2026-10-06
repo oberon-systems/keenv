@@ -27,6 +27,11 @@ EXPANSION = re.compile(
     r'|\$(?P<bare>[A-Za-z_][A-Za-z0-9_]*)',
 )
 
+# `# keenv: vault ~/oberon.kdbx` - a plain comment to whatever else reads it.
+DIRECTIVE = re.compile(r'^\s*#\s*keenv:\s*(\S*)\s*(.*?)\s*$')
+
+DIRECTIVES = ('vault', 'keyfile', 'ttl')
+
 # The ceiling is deliberate: a remembered master password is a liability
 # that grows with the time it is kept, so the choice is not left open.
 TTL_CAP = 900
@@ -46,14 +51,31 @@ def parse_ttl(value: str | int) -> int:
 
     amount = int(match.group(1))
     seconds = amount * 60 if match.group(2) == 'm' else amount
-    if seconds <= 0:
-        raise ValueError('must be more than zero')
     if seconds > TTL_CAP:
         raise ValueError(
             f'must not exceed {TTL_CAP // 60}m, which is the longest '
             'keenv will remember a master password',
         )
     return seconds
+
+
+def directive(
+    match: re.Match[str],
+    known: tuple[str, ...] = DIRECTIVES,
+) -> tuple[str, Path | int]:
+    """Read one `# keenv:` line: a path, or for ttl a duration."""
+    name, value = match.group(1), match.group(2)
+    if name not in known:
+        raise ValueError(
+            f'unknown keenv directive {name!r}; '
+            f'only {", ".join(known)} are known',
+        )
+    if not value:
+        kind = 'duration' if name == 'ttl' else 'path'
+        raise ValueError(f'keenv directive {name} needs a {kind}')
+    if name == 'ttl':
+        return name, parse_ttl(value)
+    return name, Path(value).expanduser()
 
 
 class EntrySpec(BaseModel):
@@ -79,7 +101,7 @@ class ConfigFile(BaseModel):
 
     vault: Path | None = None
     keyfile: Path | None = None
-    ttl: int | None = None
+    ttl: int = 0
     env_files: list[Path] = []
     env: dict[str, EntrySpec] = {}
 
@@ -95,8 +117,8 @@ class ConfigFile(BaseModel):
 
     @field_validator('ttl', mode='before')
     @classmethod
-    def _duration(cls, value: str | int | None) -> int | None:
-        return None if value is None else parse_ttl(value)
+    def _duration(cls, value: str | int) -> int:
+        return parse_ttl(value)
 
 
 class Settings(NamedTuple):
@@ -104,7 +126,7 @@ class Settings(NamedTuple):
 
     vault: Path | None
     keyfile: Path | None
-    ttl: int | None = None
+    ttl: int = 0
 
 
 class Plan(NamedTuple):
@@ -185,21 +207,32 @@ def load_config(path: Path) -> Plan:
     return Plan(settings, bindings, origins, tuple(config.env_files))
 
 
-def load_env(
+def read_env(
     path: Path,
     known: dict[str, Binding] | None = None,
-) -> dict[str, Binding]:
-    """Read a .env: ${NAME} expands, keenv:// resolves, the rest is literal.
+) -> tuple[dict[str, Binding], dict[str, Path | int]]:
+    """Read a .env: its variables, and its `# keenv:` directives.
 
-    `known` is what the files read before this one hold, for ${NAME} to see.
+    ${NAME} expands, keenv:// resolves, the rest is literal. `known` is what
+    the files read before this one hold, for ${NAME} to see.
     """
     if not path.is_file():
-        return {}
+        return {}, {}
 
     known = known or {}
     bindings: dict[str, Binding] = {}
+    directives: dict[str, Path | int] = {}
     text = path.read_text(encoding='utf-8')
     for number, line in enumerate(text.splitlines(), 1):
+        try:
+            found = DIRECTIVE.match(line)
+            if found:
+                name, setting = directive(found)
+                directives[name] = setting
+                continue
+        except ValueError as exc:
+            raise ValueError(f'{path}:{number}: {exc}') from exc
+
         if not line.strip() or line.lstrip().startswith('#'):
             continue
 
@@ -215,7 +248,15 @@ def load_env(
         except ValueError as exc:
             raise ValueError(f'{path}:{number}: {exc}') from exc
 
-    return bindings
+    return bindings, directives
+
+
+def load_env(
+    path: Path,
+    known: dict[str, Binding] | None = None,
+) -> dict[str, Binding]:
+    """Read the variables of a .env, leaving its directives aside."""
+    return read_env(path, known)[0]
 
 
 def overlay(
@@ -244,18 +285,22 @@ def build(
     """Merge the layers. A .env beats keenv.yaml, the flags beat both.
 
     The paths given beat `env_files`, which beats ./.env; of several files
-    the later one wins.
+    the later one wins, its `# keenv:` directives included.
     """
     plan = load_config(config_path)
     bindings = dict(plan.bindings)
     origins = dict(plan.origins)
 
     from_env: dict[str, Binding] = {}
+    directives: dict[str, Path | int] = {}
     for path in env_paths or plan.env_files or (DEFAULT_ENV,):
-        layer = load_env(path, from_env)
+        layer, found = read_env(path, from_env)
         from_env.update(layer)
+        directives.update(found)
         origins.update({name: str(path) for name in layer})
     bindings.update(from_env)
 
-    settings = overlay(plan.settings, vault, keyfile)
+    settings = overlay(
+        plan.settings._replace(**directives), vault, keyfile,
+    )
     return Plan(settings, bindings, origins, plan.env_files)

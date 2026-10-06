@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from keenv.config import build, load_config, load_env
@@ -344,7 +346,7 @@ def test_a_bare_ttl_counts_as_seconds(tmp_path):
 
 def test_no_ttl_means_nothing_is_remembered(tmp_path):
     config = write(tmp_path / 'keenv.yaml', 'vault: /a.kdbx\n')
-    assert load_config(config).settings.ttl is None
+    assert load_config(config).settings.ttl == 0
 
 
 def test_a_ttl_past_the_ceiling_is_an_error(tmp_path):
@@ -359,13 +361,61 @@ def test_an_hour_is_not_a_duration_keenv_takes(tmp_path):
         load_config(config)
 
 
-def test_a_zero_ttl_is_an_error(tmp_path):
+def test_a_zero_ttl_is_read(tmp_path):
     config = write(tmp_path / 'keenv.yaml', 'ttl: 0\n')
-    with pytest.raises(ValueError, match='more than zero'):
-        load_config(config)
+    assert load_config(config).settings.ttl == 0
 
 
 def test_the_ttl_survives_the_merge(tmp_path):
     config = write(tmp_path / 'keenv.yaml', 'ttl: 5m\nvault: /a.kdbx\n')
     plan = build(config, [tmp_path / '.env'], vault=tmp_path / 'b.kdbx')
     assert plan.settings.ttl == 300
+
+
+def test_env_directives_override_the_config(tmp_path, monkeypatch):
+    monkeypatch.delenv('KEENV_VAULT', raising=False)
+    monkeypatch.delenv('KEENV_KEYFILE', raising=False)
+    monkeypatch.setenv('HOME', str(tmp_path))
+    config = write(tmp_path / 'keenv.yaml', 'ttl: 5m\nvault: /a.kdbx\n')
+    env = write(tmp_path / '.env', '\n'.join([
+        '# keenv: ttl 0',
+        '# keenv: vault ~/b.kdbx',
+        '# keenv: keyfile ~/b.keyx',
+        'A=1',
+    ]))
+
+    settings = build(config, [env]).settings
+    assert settings.ttl == 0
+    assert settings.vault == tmp_path / 'b.kdbx'
+    assert settings.keyfile == tmp_path / 'b.keyx'
+
+
+def test_the_later_env_file_has_the_last_directive(tmp_path):
+    first = write(tmp_path / 'a.env', '# keenv: ttl 30s\nA=1\n')
+    second = write(tmp_path / 'b.env', '# keenv: ttl 2m\nB=2\n')
+    assert build(tmp_path / 'keenv.yaml', [first, second]).settings.ttl == 120
+
+
+def test_keenv_vault_beats_a_directive(tmp_path, monkeypatch):
+    monkeypatch.setenv('KEENV_VAULT', '/from-env.kdbx')
+    env = write(tmp_path / '.env', '# keenv: vault /from-file.kdbx\nA=1\n')
+    plan = build(tmp_path / 'keenv.yaml', [env])
+    assert plan.settings.vault == Path('/from-env.kdbx')
+
+
+def test_directives_are_not_variables(tmp_path):
+    env = write(tmp_path / '.env', '# keenv: ttl 5m\nA=1\n')
+    assert load_env(env) == {'A': '1'}
+
+
+@pytest.mark.parametrize(('line', 'message'), [
+    ('# keenv: pin 1234', 'unknown keenv directive'),
+    ('# keenv: ttl 1h', 'not a duration'),
+    ('# keenv: ttl', 'needs a duration'),
+    ('# keenv: vault', 'needs a path'),
+])
+def test_a_bad_directive_names_its_line(tmp_path, line, message):
+    env = write(tmp_path / '.env', f'A=1\n{line}\n')
+    with pytest.raises(ValueError, match=message) as caught:
+        load_env(env)
+    assert f'{env}:2:' in str(caught.value)

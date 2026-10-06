@@ -39,7 +39,7 @@ def template_fixture(tmp_path, vault_path, keyfile, monkeypatch):
 
 def test_load_reads_the_directives(template, vault_path, keyfile):
     loaded = conf.load(template)
-    assert loaded.settings == Settings(vault_path, keyfile, None)
+    assert loaded.settings == Settings(vault_path, keyfile)
     assert set(loaded.bindings) == {'line 7', 'line 8'}
     assert loaded.origins['line 7'] == str(template)
 
