@@ -182,15 +182,26 @@ The layers apply in this order, each one overriding the last:
 | :--- | :--- |
 | `keenv.yaml` | `-c`, default `./keenv.yaml` |
 | `.env` | `env_files:`, then `-e`, default `./.env` |
-| the database path | `vault:`, then `KEENV_VAULT`, then `--vault` |
-| the key file path | `keyfile:`, then `KEENV_KEYFILE`, then `--keyfile` |
+| the database path | `vault:`, `# keenv: vault`, `KEENV_VAULT`, `--vault` |
+| the key file path | `keyfile:`, `# keenv: keyfile`, `KEENV_KEYFILE`, `--keyfile` |
+| the agent's TTL | `ttl:`, then `# keenv: ttl` |
 
 A file that is not there is an empty layer, not an error. Having nothing to
 resolve after both layers is an error.
 
-`ttl:` is read from `keenv.yaml` and nowhere else. It has no flag and no
-environment variable, so nothing outside the file you can see can start
-remembering your master password.
+A `.env` may carry the settings of `keenv.yaml` as `#` comments, which
+anything else reading the file skips. Of several files the later one wins, and
+any other `# keenv:` directive is an error:
+
+```text
+# keenv: vault ~/Dropbox/oberon.kdbx
+# keenv: keyfile ~/oberon.keyx
+# keenv: ttl 0
+```
+
+`ttl` is read from `keenv.yaml` and from a `.env`, and nowhere else. It has no
+flag and no environment variable, so nothing outside the files you can see
+can start remembering your master password.
 
 `keenv.yaml` is validated against a
 [pydantic](https://docs.pydantic.dev/) model that rejects keys it does not
@@ -273,17 +284,34 @@ ask only for the PIN:
 ```console
 $ keenv run -- tofu plan
 Master password for /home/you/oberon.kdbx:
-New PIN (4 to 8 digits, Enter to skip):
-Repeat the PIN:
+New PIN (4 to 8 digits), press Enter to skip:
+Repeat PIN [3]:
 
 $ keenv run -- tofu apply
-PIN for /home/you/oberon.kdbx:
+PIN [3]:
 ```
 
-Pressing Enter at `New PIN` instead of typing one skips the agent for that
-run. `keenv` says `running without the agent`, waits two seconds so that
-Ctrl-C can still stop the run, and goes on with the database it has already
-opened. Nothing is remembered, so the next run asks for the password again.
+While a PIN prompt is open, the line under it names the database, as
+`vault: /home/you/oberon.kdbx`, or above it on a `TERM=dumb` terminal such as
+an Emacs shell. The number in brackets is how many tries are left. `ttl: 0`
+is the same as no `ttl` at all and never asks for a PIN, which lets a `.env`
+switch the agent off for one project.
+
+Pressing Enter at the first `New PIN` instead of typing one skips the agent
+for that run. `keenv` says `running without the agent`, waits two seconds so
+that Ctrl-C can still stop the run, and goes on with the database it has
+already opened. Nothing is remembered, so the next run asks for the password
+again.
+
+Once anything has been typed, there is no skipping. A PIN that will not do is
+asked again, `New PIN [2]`, then `[1]`, and the repeat has three tries of its
+own. A PIN to an agent that is up has three tries too, and an empty one counts
+as wrong. Run out of tries and the run fails and the agent is closed, without
+falling back to the master password.
+
+The PIN prompts get sixty seconds in all. A prompt left open longer fails the
+run and closes the agent, so a walked-away terminal does not keep the master
+password waiting in memory.
 
 `keenv lock` forgets it at once, without waiting for the TTL. There is no
 `keenv unlock` on purpose: the first run that needs the password is the
@@ -327,8 +355,8 @@ macOS has neither `PR_SET_DUMPABLE` nor a runtime tmpfs. The
 
 ### The limits, plainly
 
-`ttl` takes `30s`, `5m` or a bare count of seconds, and must be more than zero
-and no more than fifteen minutes. Anything longer is a configuration error
+`ttl` takes `30s`, `5m` or a bare count of seconds, from `0`, which turns the
+agent off, to fifteen minutes. Anything longer is a configuration error
 rather than a value quietly cut down to fit. The clock is idle-based: every
 successful run puts it back.
 
