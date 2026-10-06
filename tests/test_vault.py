@@ -10,10 +10,17 @@ from pykeepass import PyKeePass
 from conftest import ACCESS_KEY, SECRET_KEY, TOKEN
 from keenv import vault as keenv_vault
 from keenv.uri import parse
-from keenv.vault import Vault, prompt_new_pin, prompt_password
+from keenv.vault import (
+    PinTimeout,
+    Vault,
+    prompt_new_pin,
+    prompt_password,
+    prompt_pin,
+)
 
 PASSWORD = 'not-the-real-master-password'
 PROMPT = b'Master password for'
+CPR = b'\x1b[6n'
 TIMEOUT = 10.0
 
 
@@ -91,6 +98,26 @@ def _read_until(master: int, needle: bytes) -> bytes:
     return seen
 
 
+def _answer_cpr(master: int, needle: bytes) -> bytes:
+    """Read like _read_until, answering cursor position requests as a
+    terminal would: prompt_toolkit draws the toolbar only once it has one.
+    """
+    seen = b''
+    while needle not in seen:
+        if not select.select([master], [], [], TIMEOUT)[0]:
+            break
+        try:
+            chunk = os.read(master, 1024)
+        except OSError:
+            break
+        if not chunk:
+            break
+        if CPR in chunk:
+            os.write(master, b'\x1b[1;1R')
+        seen += chunk
+    return seen
+
+
 def _exit_code(pid: int) -> int | None:
     """Reap the child within the timeout, killing it if it overstays."""
     deadline = time.monotonic() + TIMEOUT
@@ -142,11 +169,16 @@ def test_a_session_without_a_terminal_is_reported(vault_path):
 
 
 def _pins(monkeypatch, answers):
-    given = iter(answers)
-    monkeypatch.setattr(
-        keenv_vault, 'prompt_pin', lambda path, prompt=None: next(given),
-    )
+    """Answer the prompts in turn, and keep the text of each one."""
+    given, asked = iter(answers), []
+
+    def answer(vault, message, deadline, hidden=True):
+        asked.append(''.join(text for _, text in message))
+        return next(given)
+
+    monkeypatch.setattr(keenv_vault, '_ask', answer)
     monkeypatch.setattr(keenv_vault, 'say', lambda text: None)
+    return asked
 
 
 def test_a_pin_of_the_wrong_length_is_asked_again(vault_path, monkeypatch):
@@ -154,9 +186,11 @@ def test_a_pin_of_the_wrong_length_is_asked_again(vault_path, monkeypatch):
     assert prompt_new_pin(vault_path) == '123456'
 
 
-def test_a_mistyped_repeat_is_asked_again(vault_path, monkeypatch):
-    _pins(monkeypatch, ['123456', '654321', '123456', '123456'])
+def test_a_mistyped_repeat_asks_only_the_repeat_again(vault_path,
+                                                      monkeypatch):
+    asked = _pins(monkeypatch, ['123456', '654321', '123456'])
     assert prompt_new_pin(vault_path) == '123456'
+    assert asked[1:] == ['Repeat PIN [3]: ', 'Repeat PIN [2]: ']
 
 
 def test_a_pin_wrong_three_times_gives_up(vault_path, monkeypatch):
@@ -165,6 +199,122 @@ def test_a_pin_wrong_three_times_gives_up(vault_path, monkeypatch):
         prompt_new_pin(vault_path)
 
 
+def test_a_repeat_wrong_three_times_gives_up(vault_path, monkeypatch):
+    _pins(monkeypatch, ['123456', '1', '2', '3'])
+    with pytest.raises(ValueError, match='not repeated after 3 attempts'):
+        prompt_new_pin(vault_path)
+
+
 def test_an_empty_new_pin_skips_the_agent(vault_path, monkeypatch):
     _pins(monkeypatch, [''])
     assert prompt_new_pin(vault_path) is None
+
+
+def test_only_the_first_prompt_offers_the_skip(vault_path, monkeypatch):
+    asked = _pins(monkeypatch, ['12', '', '123456', '123456'])
+    assert prompt_new_pin(vault_path) == '123456'
+    assert asked[:3] == [
+        'New PIN (4 to 8 digits), press Enter to skip: ',
+        'New PIN (4 to 8 digits) [2]: ',
+        'New PIN (4 to 8 digits) [1]: ',
+    ]
+
+
+def test_a_refused_short_pin_is_asked_again(vault_path, monkeypatch):
+    _pins(monkeypatch, ['1234', 'n', '123456', '123456'])
+    assert prompt_new_pin(vault_path) == '123456'
+
+
+def test_an_accepted_short_pin_is_kept(vault_path, monkeypatch):
+    _pins(monkeypatch, ['1234', 'y', '1234'])
+    assert prompt_new_pin(vault_path) == '1234'
+
+
+def test_a_spent_deadline_asks_nothing(vault_path):
+    with pytest.raises(PinTimeout, match='timed out'):
+        prompt_pin(vault_path, 3, time.monotonic())
+
+
+def test_the_pin_is_read_from_the_controlling_terminal(vault_path):
+    pid, master = pty.fork()
+    if pid == 0:
+        try:
+            typed = prompt_pin(vault_path, 3, time.monotonic() + TIMEOUT)
+        except BaseException:
+            os._exit(2)
+        os._exit(0 if typed == '123456' else 1)
+
+    try:
+        seen = _answer_cpr(master, b'vault: ')
+        prompted = b'[3]' in seen and b'vault: ' in seen
+        if prompted:
+            os.write(master, b'123456\r')
+        code = _exit_code(pid)
+    finally:
+        os.close(master)
+
+    assert prompted, 'no PIN prompt reached the terminal'
+    assert code == 0
+
+
+def test_an_abandoned_pin_prompt_times_out(vault_path):
+    pid, master = pty.fork()
+    if pid == 0:
+        try:
+            prompt_pin(vault_path, 3, time.monotonic() + 1)
+        except PinTimeout:
+            os._exit(0)
+        except BaseException:
+            os._exit(2)
+        os._exit(1)
+
+    try:
+        _answer_cpr(master, b'vault: ')
+        code = _exit_code(pid)
+    finally:
+        os.close(master)
+
+    assert code == 0
+
+
+def test_a_dumb_terminal_gets_the_plain_prompt(vault_path, monkeypatch):
+    monkeypatch.setenv('TERM', 'dumb')
+    pid, master = pty.fork()
+    if pid == 0:
+        try:
+            typed = prompt_pin(vault_path, 3, time.monotonic() + TIMEOUT)
+        except BaseException:
+            os._exit(2)
+        os._exit(0 if typed == '123456' else 1)
+
+    try:
+        seen = _read_until(master, b'PIN [3]: ')
+        if b'PIN [3]: ' in seen:
+            os.write(master, b'123456\n')
+        code = _exit_code(pid)
+    finally:
+        os.close(master)
+
+    assert seen == f'vault: {vault_path}\r\nPIN [3]: '.encode()
+    assert code == 0
+
+
+def test_a_dumb_terminal_times_out_as_well(vault_path, monkeypatch):
+    monkeypatch.setenv('TERM', 'dumb')
+    pid, master = pty.fork()
+    if pid == 0:
+        try:
+            prompt_pin(vault_path, 3, time.monotonic() + 1)
+        except PinTimeout:
+            os._exit(0)
+        except BaseException:
+            os._exit(2)
+        os._exit(1)
+
+    try:
+        _read_until(master, b'PIN [3]: ')
+        code = _exit_code(pid)
+    finally:
+        os.close(master)
+
+    assert code == 0

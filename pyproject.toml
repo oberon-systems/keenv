@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.10"
 dependencies = [
     "argon2-cffi>=21",
+    "prompt_toolkit>=3",
     "pydantic>=2",
     "pykeepass>=4.1",
     "PyYAML>=6",

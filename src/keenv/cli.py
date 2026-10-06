@@ -4,7 +4,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from time import sleep
+from time import monotonic, sleep
 
 from . import agent, conf, paint, windows
 from .config import (
@@ -19,7 +19,9 @@ from .config import (
 from .secret import hide, seal, unseal, wipe
 from .uri import Reference
 from .vault import (
+    PIN_TIMEOUT,
     TRIES,
+    PinTimeout,
     Vault,
     WrongCredentials,
     prompt_new_pin,
@@ -100,14 +102,16 @@ def _split_command(argv: list[str]) -> tuple[list[str], list[str]]:
     return argv[:index], argv[index + 1:]
 
 
-def _try_pin(path: Path, keyfile: Path | None,
-             salt: bytes, blob: bytes) -> Vault:
+def _try_pin(path: Path, keyfile: Path | None, salt: bytes, blob: bytes,
+             left: int, deadline: float) -> Vault:
     """Open the database with the PIN as typed, and nothing else.
 
     Rubbish that is not even text never was the password, so it counts as a
     wrong PIN here rather than as a codec error in whatever encodes it next.
+    An empty answer is a wrong PIN as well.
     """
-    password = unseal(blob, salt, prompt_pin(path))
+    pin = prompt_pin(path, left, deadline)
+    password = unseal(blob, salt, pin) if pin else None
     if password is None:
         raise WrongCredentials(f'{path}: wrong master password or key file')
     return Vault(path, keyfile, password)
@@ -118,16 +122,19 @@ def _from_agent(path: Path, keyfile: Path | None,
     """Open with what the agent holds, or None while it holds nothing.
 
     Almost nothing here checks the PIN: a wrong one unseals to rubbish and
-    the database is what turns it down.
+    the database is what turns it down. TRIES of those, or PIN_TIMEOUT gone
+    by, and the agent is closed.
     """
     held = client.get()
     if held is None:
         return None
 
     salt, blob = held
+    deadline = monotonic() + PIN_TIMEOUT
     for attempt in range(TRIES):
         try:
-            vault = _try_pin(path, keyfile, salt, blob)
+            vault = _try_pin(path, keyfile, salt, blob, TRIES - attempt,
+                             deadline)
         except WrongCredentials:
             try:
                 client.fail()
@@ -136,13 +143,14 @@ def _from_agent(path: Path, keyfile: Path | None,
                     f'{path}: too many wrong PINs, the agent forgot the '
                     'master password',
                 ) from None
-            if attempt + 1 == TRIES:
-                break
-            say(paint.info('keenv: wrong PIN, try again'))
             continue
+        except PinTimeout:
+            agent.lock(path)
+            raise
         client.ok()
         return vault
-    raise ValueError(f'{path}: wrong PIN')
+    agent.lock(path)
+    raise ValueError(f'{path}: wrong PIN, the agent is closed')
 
 
 def _seed(path: Path, keyfile: Path | None,
@@ -200,7 +208,7 @@ def _unlock(path: Path, keyfile: Path | None, ttl: int) -> Vault:
 def _open(settings: Settings, spawning: bool) -> Vault:
     """Open the database, through the agent when the config asks for it."""
     path, keyfile, ttl = settings
-    if ttl is None:
+    if not ttl:
         return Vault(path, keyfile)
     if WINDOWS:
         paint.warn('keenv: ttl does nothing on Windows, which has no agent')

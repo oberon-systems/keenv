@@ -1,9 +1,23 @@
 """Opening the KeePass database and reading single fields out of it."""
 
+import asyncio
 import getpass
+import os
+import select
+import selectors
 import sys
 from pathlib import Path
+from time import monotonic
 
+from prompt_toolkit import Application, PromptSession
+from prompt_toolkit.formatted_text import (
+    FormattedText,
+    fragment_list_to_text,
+)
+from prompt_toolkit.input import create_input
+from prompt_toolkit.output import ColorDepth, create_output
+from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import is_dumb_terminal
 from pykeepass import PyKeePass
 from pykeepass.entry import Entry
 from pykeepass.exceptions import CredentialsError
@@ -18,7 +32,19 @@ LISTED = 3
 # How many times a PIN may be typed badly before keenv gives up on it.
 TRIES = 3
 
+# The whole PIN exchange, every try included: an abandoned prompt must not
+# leave the master password waiting in memory.
+PIN_TIMEOUT = 60
+
+# paint.YELLOW, spelled the way prompt_toolkit takes a colour.
+YELLOW = '#af8700'
+
+NEW_PIN = 'New PIN (4 to 8 digits)'
+
 WINDOWS = sys.platform == 'win32'
+
+if not WINDOWS:
+    import termios
 
 # KeePass field name -> the attribute pykeepass exposes it under.
 PROPERTIES = {
@@ -62,18 +88,6 @@ def say(text: str) -> None:
         pass
 
 
-def _confirm(question: str) -> bool:
-    """Put a question on the terminal and read the answer from it."""
-    try:
-        with open('/dev/tty', 'w', encoding='utf-8') as out:
-            out.write(question)
-            out.flush()
-            with open('/dev/tty', 'r', encoding='utf-8') as tty:
-                return tty.readline().strip().lower() in ('y', 'yes')
-    except OSError:
-        return False
-
-
 def prompt_password(vault: Path) -> str:
     """Ask for the master password on the terminal, never on stdin."""
     try:
@@ -89,10 +103,90 @@ def prompt_password(vault: Path) -> str:
         ) from exc
 
 
-def prompt_pin(vault: Path, prompt: str | None = None) -> str:
-    """Ask for the PIN, on the same terms as the master password."""
+class PinTimeout(ValueError):
+    """Nobody finished with the PIN inside PIN_TIMEOUT."""
+
+
+def _style() -> Style:
+    colour = f'fg:{YELLOW}' if paint.enabled() else ''
+    return Style.from_dict({
+        'prompt': colour,
+        'strong': f'{colour} bold',
+        'bottom-toolbar': f'{colour} italic noreverse',
+    })
+
+
+def _counted(label: str, left: int) -> FormattedText:
+    return FormattedText([
+        ('class:prompt', f'{label} '),
+        ('class:strong', f'[{left}]'),
+        ('class:prompt', ': '),
+    ])
+
+
+def _expire(app: Application[str], vault: Path) -> None:
+    if app.is_running:
+        app.exit(exception=PinTimeout(
+            f'timed out waiting for the PIN of {vault}',
+        ))
+
+
+def _plain(vault: Path, message: FormattedText, remaining: float,
+           hidden: bool) -> str:
+    """The same question for a terminal that takes no escape codes."""
+    tty = os.open('/dev/tty', os.O_RDWR | os.O_NOCTTY)
     try:
-        return _hidden(paint.info(prompt or f'PIN for {vault}: '))
+        prompt = fragment_list_to_text(message)
+        os.write(tty, f'vault: {vault}\n{prompt}'.encode())
+        before = termios.tcgetattr(tty)
+        if hidden:
+            quiet = termios.tcgetattr(tty)
+            quiet[3] &= ~termios.ECHO
+            termios.tcsetattr(tty, termios.TCSAFLUSH, quiet)
+        try:
+            # The line discipline wakes select only once Enter is pressed.
+            if not select.select([tty], [], [], remaining)[0]:
+                raise PinTimeout(f'timed out waiting for the PIN of {vault}')
+            answer = os.read(tty, 1024)
+        finally:
+            termios.tcsetattr(tty, termios.TCSAFLUSH, before)
+            if hidden:
+                os.write(tty, b'\n')
+    finally:
+        os.close(tty)
+    if not answer:
+        raise EOFError
+    return answer.decode('utf-8').rstrip('\r\n')
+
+
+def _ask(vault: Path, message: FormattedText, deadline: float,
+         hidden: bool = True) -> str:
+    """Ask on the terminal, the vault named under the line, by `deadline`."""
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise PinTimeout(f'timed out waiting for the PIN of {vault}')
+    try:
+        if is_dumb_terminal():
+            return _plain(vault, message, remaining, hidden)
+        with open('/dev/tty', 'r', encoding='utf-8') as tty_in, \
+                open('/dev/tty', 'w', encoding='utf-8') as tty_out:
+            session: PromptSession[str] = PromptSession(
+                input=create_input(tty_in),
+                output=create_output(tty_out),
+                style=_style(),
+                color_depth=(
+                    None if paint.enabled() else ColorDepth.DEPTH_1_BIT
+                ),
+                is_password=hidden,
+                bottom_toolbar=[('', f'vault: {vault}')],
+            )
+            # kqueue, the macOS default, refuses /dev/tty; select takes it.
+            loop = asyncio.SelectorEventLoop(selectors.SelectSelector())
+            try:
+                loop.call_later(remaining, _expire, session.app, vault)
+                return loop.run_until_complete(session.prompt_async(message))
+            finally:
+                loop.close()
     except OSError as exc:
         raise ValueError(
             f'no terminal to ask for the PIN of {vault}; '
@@ -102,40 +196,63 @@ def prompt_pin(vault: Path, prompt: str | None = None) -> str:
         raise ValueError(f'no PIN given for {vault}') from exc
 
 
-def _new_pin(vault: Path) -> str | None:
-    """Take a PIN twice over, and argue about it if it is a short one.
+def prompt_pin(vault: Path, left: int, deadline: float) -> str:
+    """Ask for the PIN of a filled agent, saying how many tries are left."""
+    return _ask(vault, _counted('PIN', left), deadline)
 
-    An empty answer is no PIN at all: the run goes on without the agent.
-    """
-    pin = prompt_pin(vault, 'New PIN (4 to 8 digits, Enter to skip): ')
-    if not pin:
-        return None
-    check_pin(pin)
-    if pin != prompt_pin(vault, 'Repeat the PIN: '):
-        raise BadPin('the two PINs do not match')
 
-    if is_short(pin):
-        question = paint.info(f'{SHORT_PIN}\nUse it anyway? [y/N] ')
-        if not _confirm(question):
-            raise BadPin('cancelled: choose a longer PIN')
-    return pin
+def _confirm(vault: Path, deadline: float) -> bool:
+    say(paint.info(SHORT_PIN))
+    answer = _ask(
+        vault, FormattedText([('class:prompt', 'Use it anyway? [y/N] ')]),
+        deadline, hidden=False,
+    )
+    return answer.strip().lower() in ('y', 'yes')
+
+
+def _choose_pin(vault: Path, deadline: float) -> str | None:
+    """Take a usable PIN. Only an empty first answer skips the agent."""
+    for attempt in range(TRIES):
+        if attempt:
+            message = _counted(NEW_PIN, TRIES - attempt)
+        else:
+            message = FormattedText([
+                ('class:prompt', f'{NEW_PIN}, '),
+                ('class:strong', 'press Enter to skip'),
+                ('class:prompt', ': '),
+            ])
+        pin = _ask(vault, message, deadline)
+        if not pin and not attempt:
+            return None
+        try:
+            check_pin(pin)
+            if is_short(pin) and not _confirm(vault, deadline):
+                raise BadPin('choose a longer PIN')
+            return pin
+        except BadPin as exc:
+            say(paint.info(f'keenv: {exc}'))
+    raise ValueError(f'no usable PIN after {TRIES} attempts')
+
+
+def _repeat_pin(vault: Path, pin: str, deadline: float) -> None:
+    for attempt in range(TRIES):
+        if _ask(vault, _counted('Repeat PIN', TRIES - attempt),
+                deadline) == pin:
+            return
+        say(paint.info('keenv: that is not the new PIN'))
+    raise ValueError(f'the new PIN was not repeated after {TRIES} attempts')
 
 
 def prompt_new_pin(vault: Path) -> str | None:
-    """Ask for a PIN until one will do, or until the tries run out.
+    """Take a new PIN and its repeat, TRIES of each, inside PIN_TIMEOUT.
 
-    Only a bad answer is asked again. A missing terminal arrives here as a
-    plain ValueError and goes straight back out, since no repeat fixes it.
+    None is the skip: Enter at the very first prompt, and nowhere else.
     """
-    reason = ''
-    for attempt in range(TRIES):
-        try:
-            return _new_pin(vault)
-        except BadPin as exc:
-            reason = str(exc)
-            if attempt + 1 < TRIES:
-                say(paint.info(f'keenv: {reason}, try again'))
-    raise ValueError(f'{reason}, after {TRIES} attempts')
+    deadline = monotonic() + PIN_TIMEOUT
+    pin = _choose_pin(vault, deadline)
+    if pin is not None:
+        _repeat_pin(vault, pin, deadline)
+    return pin
 
 
 class WrongCredentials(ValueError):

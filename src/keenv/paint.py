@@ -29,6 +29,11 @@ def _coloured(stream: IO[str] | None) -> bool:
     return stream is None or stream.isatty()
 
 
+def enabled() -> bool:
+    """Whether the terminal itself gets colour on this run."""
+    return _coloured(None)
+
+
 def tint(colour: int, text: str, stream: IO[str] | None = None) -> str:
     """Wrap text in one solarized colour, or hand it back as it is."""
     if not _coloured(stream):

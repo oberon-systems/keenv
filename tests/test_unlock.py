@@ -9,7 +9,7 @@ import pytest
 from keenv import agent, cli
 from keenv.config import Settings
 from keenv.secret import unseal
-from keenv.vault import WrongCredentials
+from keenv.vault import PinTimeout, WrongCredentials
 
 PASSWORD = 'not-the-real-master-password'
 PIN = '123456'
@@ -54,7 +54,7 @@ def opened_fixture(monkeypatch):
 
 def _answers(monkeypatch, pin=PIN):
     monkeypatch.setattr(cli, 'prompt_password', lambda path: PASSWORD)
-    monkeypatch.setattr(cli, 'prompt_pin', lambda path: pin)
+    monkeypatch.setattr(cli, 'prompt_pin', lambda path, left, deadline: pin)
     monkeypatch.setattr(cli, 'prompt_new_pin', lambda path: PIN)
 
 
@@ -77,8 +77,22 @@ def _wait_gone(database):
 def test_without_a_ttl_no_agent_appears(runtime, database, opened,
                                         monkeypatch):
     _answers(monkeypatch)
-    assert cli._open(Settings(database, None, None), True) == 'opened'
+    assert cli._open(Settings(database, None), True) == 'opened'
     assert agent.connect(database) is None
+
+
+def test_a_zero_ttl_ignores_an_agent_that_is_up(runtime, database, opened,
+                                                monkeypatch):
+    _answers(monkeypatch)
+    cli._open(Settings(database, None, TTL), True)
+    try:
+        def refuse(path, left, deadline):
+            raise AssertionError('a PIN was asked for with ttl 0')
+
+        monkeypatch.setattr(cli, 'prompt_pin', refuse)
+        assert cli._open(Settings(database, None, 0), True) == 'opened'
+    finally:
+        agent.lock(database)
 
 
 def test_a_key_file_makes_the_ttl_moot(runtime, database, opened,
@@ -146,24 +160,70 @@ def test_a_wrong_pin_is_named_as_one(runtime, database, opened, monkeypatch):
     cli._open(Settings(database, None, TTL), True)
     try:
         _refuse_everything(monkeypatch)
-        monkeypatch.setattr(cli, 'prompt_pin', lambda path: '999999')
+        monkeypatch.setattr(cli, 'prompt_pin', lambda *asked: '999999')
         with pytest.raises(ValueError, match='wrong PIN'):
             cli._open(Settings(database, None, TTL), True)
     finally:
         agent.lock(database)
 
 
-def test_a_window_of_wrong_pins_drops_the_agent(runtime, database, opened,
-                                                monkeypatch):
+def test_three_wrong_pins_close_the_agent(runtime, database, opened,
+                                          monkeypatch):
     _answers(monkeypatch)
     cli._open(Settings(database, None, TTL), True)
 
     _refuse_everything(monkeypatch)
-    monkeypatch.setattr(cli, 'prompt_pin', lambda path: '999999')
-    # Every command spends TRIES of the window, so two of them fill it.
+    left = []
+
+    def wrong(path, tries, deadline):
+        left.append(tries)
+        return '999999'
+
+    monkeypatch.setattr(cli, 'prompt_pin', wrong)
+    with pytest.raises(ValueError, match='the agent is closed'):
+        cli._open(Settings(database, None, TTL), True)
+
+    assert left == [3, 2, 1]
+    assert _wait_gone(database)
+
+
+def test_an_empty_pin_is_a_wrong_one(runtime, database, opened,
+                                     monkeypatch):
+    _answers(monkeypatch)
+    cli._open(Settings(database, None, TTL), True)
+
+    monkeypatch.setattr(cli, 'prompt_pin', lambda *asked: '')
     with pytest.raises(ValueError, match='wrong PIN'):
         cli._open(Settings(database, None, TTL), True)
-    with pytest.raises(ValueError, match='the agent forgot'):
+
+    assert opened == [PASSWORD]
+    assert _wait_gone(database)
+
+
+def test_a_pin_timeout_closes_the_agent(runtime, database, opened,
+                                        monkeypatch):
+    _answers(monkeypatch)
+    cli._open(Settings(database, None, TTL), True)
+
+    def abandoned(path, left, deadline):
+        raise PinTimeout('timed out waiting for the PIN')
+
+    monkeypatch.setattr(cli, 'prompt_pin', abandoned)
+    with pytest.raises(PinTimeout):
+        cli._open(Settings(database, None, TTL), True)
+
+    assert _wait_gone(database)
+
+
+def test_a_new_pin_timeout_leaves_no_agent(runtime, database, opened,
+                                           monkeypatch):
+    _answers(monkeypatch)
+
+    def abandoned(path):
+        raise PinTimeout('timed out waiting for the PIN')
+
+    monkeypatch.setattr(cli, 'prompt_new_pin', abandoned)
+    with pytest.raises(PinTimeout):
         cli._open(Settings(database, None, TTL), True)
 
     assert _wait_gone(database)
@@ -237,8 +297,7 @@ def test_a_wrong_pin_can_be_typed_again(runtime, database, opened,
     cli._open(Settings(database, None, TTL), True)
     try:
         given = iter(['999999', '888888', PIN])
-        monkeypatch.setattr(cli, 'prompt_pin', lambda path: next(given))
-        monkeypatch.setattr(cli, 'say', lambda text: None)
+        monkeypatch.setattr(cli, 'prompt_pin', lambda *asked: next(given))
 
         def refuse_the_rubbish(path, keyfile=None, password=None):
             if password != PASSWORD:
@@ -258,8 +317,7 @@ def test_a_wrong_pin_never_reaches_the_database_as_rubbish(
     _answers(monkeypatch)
     cli._open(Settings(database, None, TTL), True)
     try:
-        monkeypatch.setattr(cli, 'prompt_pin', lambda path: '999999')
-        monkeypatch.setattr(cli, 'say', lambda text: None)
+        monkeypatch.setattr(cli, 'prompt_pin', lambda *asked: '999999')
 
         def like_pykeepass(path, keyfile=None, password=None):
             # pykeepass encodes the password, and that is where a wrong PIN
