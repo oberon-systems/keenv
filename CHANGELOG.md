@@ -1,3 +1,14 @@
+## 0.6.1 (2026-10-25)
+
+### Build
+
+- **deps**: Bump https://github.com/commitizen-tools/commitizen
+- **deps**: Update uv-build requirement
+- **deps**: Bump wyld-cz from 0.3.1 to 0.4.1 in the pre-commit group
+- **deps**: Bump the pip group with 2 updates
+- **deps**: Bump https://github.com/commitizen-tools/commitizen
+- **deps**: Bump commitizen from 4.19.0 to 4.19.1 in the pip group
+
 ## 0.6.0 (2026-10-06)
 
 ### Features
